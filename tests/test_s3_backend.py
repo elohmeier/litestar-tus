@@ -97,6 +97,25 @@ class TestS3StorageBackend:
         with pytest.raises(FileNotFoundError):
             await s3_backend.get_upload("nonexistent")
 
+    async def test_get_upload_not_found_client_error(self, s3_backend: Any) -> None:
+        from botocore.stub import Stubber
+
+        stubber = Stubber(s3_backend._client)
+        stubber.add_client_error(
+            "get_object",
+            service_error_code="NoSuchKey",
+            service_message="Not Found",
+            http_status_code=404,
+            expected_params={
+                "Bucket": s3_backend._bucket,
+                "Key": f"{s3_backend._key_prefix}nonexistent.info",
+            },
+        )
+
+        with stubber:
+            with pytest.raises(FileNotFoundError):
+                await s3_backend.get_upload("nonexistent")
+
     async def test_offset_mismatch(self, s3_backend: Any) -> None:
         from litestar_tus.models import UploadInfo
 

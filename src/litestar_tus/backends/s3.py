@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import anyio.to_thread
+from botocore.exceptions import ClientError
 
 from litestar_tus.models import UploadInfo
 
@@ -146,6 +147,11 @@ class S3StorageBackend:
                 return resp["Body"].read()
             except self._client.exceptions.NoSuchKey:
                 raise FileNotFoundError(f"Upload {upload_id} not found")
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in {"NoSuchKey", "404", "NotFound"}:
+                    raise FileNotFoundError(f"Upload {upload_id} not found")
+                raise
 
         content = await anyio.to_thread.run_sync(_get)
         info = UploadInfo.from_dict(json.loads(content))
@@ -164,6 +170,11 @@ class S3StorageBackend:
                 return json.loads(resp["Body"].read())
             except self._client.exceptions.NoSuchKey:
                 raise FileNotFoundError(f"Upload {upload_id} not found")
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in {"NoSuchKey", "404", "NotFound"}:
+                    raise FileNotFoundError(f"Upload {upload_id} not found")
+                raise
 
         info_data = await anyio.to_thread.run_sync(_get_info)
         assert info_data is not None
