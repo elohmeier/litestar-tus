@@ -73,12 +73,17 @@ class FileUpload:
 
             bytes_written = 0
             with open(self._data_path, "ab") as f:
-                while True:
-                    chunk = from_thread.run(_next_chunk)
-                    if chunk is None:
-                        break
-                    f.write(chunk)
-                    bytes_written += len(chunk)
+                try:
+                    while True:
+                        chunk = from_thread.run(_next_chunk)
+                        if chunk is None:
+                            break
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+                except Exception:
+                    f.flush()
+                    f.truncate(info.offset)
+                    raise
 
             info.offset += bytes_written
             if info.size is not None and info.offset >= info.size:
