@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import anyio
 import pytest
 
 pytest_plugins = ["pytest_databases.docker.minio"]
@@ -138,3 +139,74 @@ class TestS3StorageBackend:
         async for chunk in upload.get_reader():
             result += chunk
         assert result == data
+
+
+class TestS3Locking:
+    async def test_two_concurrent_writes_same_offset(self, s3_backend: Any) -> None:
+        """Two concurrent write_chunk calls at offset 0: exactly one succeeds."""
+        from litestar_tus.models import UploadInfo
+
+        info = UploadInfo(id="s3-lock-1", size=100)
+        await s3_backend.create_upload(info)
+
+        results: list[int | ValueError] = []
+
+        async def attempt_write() -> None:
+            upload = await s3_backend.get_upload("s3-lock-1")
+            try:
+                written = await upload.write_chunk(0, _aiter(b"hello"))
+                results.append(written)
+            except ValueError as exc:
+                results.append(exc)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(attempt_write)
+            tg.start_soon(attempt_write)
+
+        successes = [r for r in results if isinstance(r, int)]
+        failures = [r for r in results if isinstance(r, ValueError)]
+        assert len(successes) == 1
+        assert successes[0] == 5
+        assert len(failures) == 1
+
+    async def test_many_concurrent_writers(self, s3_backend: Any) -> None:
+        """10 concurrent writers at offset 0: exactly one succeeds."""
+        from litestar_tus.models import UploadInfo
+
+        info = UploadInfo(id="s3-lock-2", size=100)
+        await s3_backend.create_upload(info)
+
+        results: list[int | ValueError] = []
+
+        async def attempt_write() -> None:
+            upload = await s3_backend.get_upload("s3-lock-2")
+            try:
+                written = await upload.write_chunk(0, _aiter(b"data"))
+                results.append(written)
+            except ValueError as exc:
+                results.append(exc)
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(10):
+                tg.start_soon(attempt_write)
+
+        successes = [r for r in results if isinstance(r, int)]
+        failures = [r for r in results if isinstance(r, ValueError)]
+        assert len(successes) == 1
+        assert len(failures) == 9
+
+    async def test_sequential_writes_with_locking(self, s3_backend: Any) -> None:
+        """Sequential writes still work correctly with locking."""
+        from litestar_tus.models import UploadInfo
+
+        data1 = b"hello"
+        data2 = b"world"
+        info = UploadInfo(id="s3-lock-3", size=len(data1) + len(data2))
+        upload = await s3_backend.create_upload(info)
+
+        await upload.write_chunk(0, _aiter(data1))
+        await upload.write_chunk(len(data1), _aiter(data2))
+
+        loaded = await upload.get_info()
+        assert loaded.offset == len(data1) + len(data2)
+        assert loaded.is_final is True

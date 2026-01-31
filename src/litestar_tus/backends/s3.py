@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+import anyio
 import anyio.to_thread
 from botocore.exceptions import ClientError
 
@@ -15,12 +16,19 @@ S3Client = Any
 
 class S3Upload:
     def __init__(
-        self, info: UploadInfo, *, client: S3Client, bucket: str, key_prefix: str
+        self,
+        info: UploadInfo,
+        *,
+        client: S3Client,
+        bucket: str,
+        key_prefix: str,
+        lock: anyio.Lock,
     ) -> None:
         self._info = info
         self._client = client
         self._bucket = bucket
         self._key_prefix = key_prefix
+        self._lock = lock
 
     @property
     def _data_key(self) -> str:
@@ -39,15 +47,7 @@ class S3Upload:
         )
 
     async def write_chunk(self, offset: int, src: AsyncIterator[bytes]) -> int:
-        if offset != self._info.offset:
-            msg = f"Offset mismatch: expected {self._info.offset}, got {offset}"
-            raise ValueError(msg)
-
-        upload_id = str(self._info.storage_meta.get("multipart_upload_id", ""))
-        parts: list[dict[str, Any]] = list(self._info.storage_meta.get("parts", []))  # type: ignore[arg-type]
-        part_number = len(parts) + 1
-
-        # Collect all data from the async iterator
+        # Collect all data from the async iterator before acquiring the lock
         data = bytearray()
         async for chunk in src:
             data.extend(chunk)
@@ -57,25 +57,38 @@ class S3Upload:
 
         data_bytes = bytes(data)
 
-        def _upload_part() -> dict[str, Any]:
-            resp = self._client.upload_part(
-                Bucket=self._bucket,
-                Key=self._data_key,
-                UploadId=upload_id,
-                PartNumber=part_number,
-                Body=data_bytes,
-            )
-            return {"ETag": resp["ETag"], "PartNumber": part_number}
+        async with self._lock:
+            # Re-read authoritative state from S3
+            info = await self.get_info()
 
-        part = await anyio.to_thread.run_sync(_upload_part)
-        parts.append(part)
+            if offset != info.offset:
+                msg = f"Offset mismatch: expected {info.offset}, got {offset}"
+                raise ValueError(msg)
 
-        self._info.offset += len(data_bytes)
-        self._info.storage_meta["parts"] = parts
-        if self._info.size is not None and self._info.offset >= self._info.size:
-            self._info.is_final = True
-        await self._save_info()
-        return len(data_bytes)
+            upload_id = str(info.storage_meta.get("multipart_upload_id", ""))
+            parts: list[dict[str, Any]] = list(info.storage_meta.get("parts", []))  # type: ignore[arg-type]
+            part_number = len(parts) + 1
+
+            def _upload_part() -> dict[str, Any]:
+                resp = self._client.upload_part(
+                    Bucket=self._bucket,
+                    Key=self._data_key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    Body=data_bytes,
+                )
+                return {"ETag": resp["ETag"], "PartNumber": part_number}
+
+            part = await anyio.to_thread.run_sync(_upload_part)
+            parts.append(part)
+
+            info.offset += len(data_bytes)
+            info.storage_meta["parts"] = parts
+            if info.size is not None and info.offset >= info.size:
+                info.is_final = True
+            self._info = info
+            await self._save_info()
+            return len(data_bytes)
 
     async def get_info(self) -> UploadInfo:
         def _get() -> bytes:
@@ -87,20 +100,23 @@ class S3Upload:
         return self._info
 
     async def finish(self) -> None:
-        upload_id = str(self._info.storage_meta.get("multipart_upload_id", ""))
-        parts: list[dict[str, Any]] = list(self._info.storage_meta.get("parts", []))  # type: ignore[arg-type]
+        async with self._lock:
+            info = await self.get_info()
+            upload_id = str(info.storage_meta.get("multipart_upload_id", ""))
+            parts: list[dict[str, Any]] = list(info.storage_meta.get("parts", []))  # type: ignore[arg-type]
 
-        def _complete() -> None:
-            self._client.complete_multipart_upload(
-                Bucket=self._bucket,
-                Key=self._data_key,
-                UploadId=upload_id,
-                MultipartUpload={"Parts": parts},
-            )
+            def _complete() -> None:
+                self._client.complete_multipart_upload(
+                    Bucket=self._bucket,
+                    Key=self._data_key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                )
 
-        await anyio.to_thread.run_sync(_complete)
-        self._info.is_final = True
-        await self._save_info()
+            await anyio.to_thread.run_sync(_complete)
+            info.is_final = True
+            self._info = info
+            await self._save_info()
 
     async def get_reader(self) -> AsyncIterator[bytes]:
         def _get() -> bytes:
@@ -112,12 +128,25 @@ class S3Upload:
 
 
 class S3StorageBackend:
+    """S3-based storage backend using multipart upload.
+
+    Concurrency note: uses process-local locks (``anyio.Lock``). Only safe
+    with a single worker process. For multi-worker deployments, use sticky
+    sessions or a distributed lock.
+    """
+
     def __init__(
         self, client: S3Client, bucket: str, key_prefix: str = "tus-uploads/"
     ) -> None:
         self._client = client
         self._bucket = bucket
         self._key_prefix = key_prefix
+        self._locks: dict[str, anyio.Lock] = {}
+
+    def _get_lock(self, upload_id: str) -> anyio.Lock:
+        if upload_id not in self._locks:
+            self._locks[upload_id] = anyio.Lock()
+        return self._locks[upload_id]
 
     async def create_upload(self, info: UploadInfo) -> S3Upload:
         data_key = f"{self._key_prefix}{info.id}"
@@ -133,7 +162,11 @@ class S3StorageBackend:
         info.storage_meta["parts"] = []
 
         upload = S3Upload(
-            info, client=self._client, bucket=self._bucket, key_prefix=self._key_prefix
+            info,
+            client=self._client,
+            bucket=self._bucket,
+            key_prefix=self._key_prefix,
+            lock=self._get_lock(info.id),
         )
         await upload._save_info()
         return upload
@@ -156,57 +189,67 @@ class S3StorageBackend:
         content = await anyio.to_thread.run_sync(_get)
         info = UploadInfo.from_dict(json.loads(content))
         return S3Upload(
-            info, client=self._client, bucket=self._bucket, key_prefix=self._key_prefix
+            info,
+            client=self._client,
+            bucket=self._bucket,
+            key_prefix=self._key_prefix,
+            lock=self._get_lock(upload_id),
         )
 
     async def terminate_upload(self, upload_id: str) -> None:
-        info_key = f"{self._key_prefix}{upload_id}.info"
-        data_key = f"{self._key_prefix}{upload_id}"
+        lock = self._get_lock(upload_id)
+        async with lock:
+            info_key = f"{self._key_prefix}{upload_id}.info"
+            data_key = f"{self._key_prefix}{upload_id}"
 
-        # Get info to find multipart upload ID
-        def _get_info() -> dict[str, Any] | None:
-            try:
-                resp = self._client.get_object(Bucket=self._bucket, Key=info_key)
-                return json.loads(resp["Body"].read())
-            except self._client.exceptions.NoSuchKey:
-                raise FileNotFoundError(f"Upload {upload_id} not found")
-            except ClientError as exc:
-                code = exc.response.get("Error", {}).get("Code")
-                if code in {"NoSuchKey", "404", "NotFound"}:
+            # Get info to find multipart upload ID
+            def _get_info() -> dict[str, Any] | None:
+                try:
+                    resp = self._client.get_object(Bucket=self._bucket, Key=info_key)
+                    return json.loads(resp["Body"].read())
+                except self._client.exceptions.NoSuchKey:
                     raise FileNotFoundError(f"Upload {upload_id} not found")
-                raise
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code")
+                    if code in {"NoSuchKey", "404", "NotFound"}:
+                        raise FileNotFoundError(f"Upload {upload_id} not found")
+                    raise
 
-        info_data = await anyio.to_thread.run_sync(_get_info)
-        assert info_data is not None
-        info = UploadInfo.from_dict(info_data)
+            info_data = await anyio.to_thread.run_sync(_get_info)
+            assert info_data is not None
+            info = UploadInfo.from_dict(info_data)
 
-        mp_upload_id = info.storage_meta.get("multipart_upload_id")
-        if mp_upload_id and not info.is_final:
+            mp_upload_id = info.storage_meta.get("multipart_upload_id")
+            if mp_upload_id and not info.is_final:
 
-            def _abort() -> None:
+                def _abort() -> None:
+                    try:
+                        self._client.abort_multipart_upload(
+                            Bucket=self._bucket,
+                            Key=data_key,
+                            UploadId=str(mp_upload_id),
+                        )
+                    except Exception:
+                        pass
+
+                await anyio.to_thread.run_sync(_abort)
+
+            def _delete_info() -> None:
                 try:
-                    self._client.abort_multipart_upload(
-                        Bucket=self._bucket, Key=data_key, UploadId=str(mp_upload_id)
-                    )
+                    self._client.delete_object(Bucket=self._bucket, Key=info_key)
                 except Exception:
                     pass
 
-            await anyio.to_thread.run_sync(_abort)
+            await anyio.to_thread.run_sync(_delete_info)
 
-        def _delete_info() -> None:
-            try:
-                self._client.delete_object(Bucket=self._bucket, Key=info_key)
-            except Exception:
-                pass
+            if info.is_final:
 
-        await anyio.to_thread.run_sync(_delete_info)
+                def _delete_data() -> None:
+                    try:
+                        self._client.delete_object(Bucket=self._bucket, Key=data_key)
+                    except Exception:
+                        pass
 
-        if info.is_final:
+                await anyio.to_thread.run_sync(_delete_data)
 
-            def _delete_data() -> None:
-                try:
-                    self._client.delete_object(Bucket=self._bucket, Key=data_key)
-                except Exception:
-                    pass
-
-            await anyio.to_thread.run_sync(_delete_data)
+        self._locks.pop(upload_id, None)
