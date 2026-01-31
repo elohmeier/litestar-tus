@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import secrets
 from typing import TYPE_CHECKING, Any
 
@@ -8,6 +9,9 @@ from litestar_tus.models import UploadMetadata
 
 if TYPE_CHECKING:
     from litestar import Litestar
+
+
+logger = logging.getLogger(__name__)
 
 
 def generate_upload_id() -> str:
@@ -43,4 +47,4 @@ def safe_emit(app: Litestar, event_id: str, **kwargs: Any) -> None:
     try:
         app.emit(event_id, **kwargs)
     except Exception:
-        pass
+        logger.exception("TUS event handler failed: %s", event_id)
