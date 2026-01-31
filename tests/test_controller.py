@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import anyio
 
@@ -330,3 +334,342 @@ class TestConcurrentPatch:
             tg.start_soon(send_patch)
 
         assert sorted(status_codes) == [204, 409]
+
+
+def _upload_id_from_location(location: str) -> str:
+    return location.rsplit("/", 1)[-1]
+
+
+def _expire_upload(upload_dir: Path, upload_id: str) -> None:
+    info_path = upload_dir / f"{upload_id}.info"
+    info = json.loads(info_path.read_bytes())
+    info["expires_at"] = (
+        datetime.now(tz=timezone.utc) - timedelta(hours=1)
+    ).isoformat()
+    info_path.write_bytes(json.dumps(info).encode())
+
+
+class TestChecksum:
+    async def test_options_includes_checksum_algorithm_header(self, tus_client) -> None:
+        resp = await tus_client.options("/files/")
+        assert resp.status_code == 204
+        assert "checksum" in resp.headers["tus-extension"]
+        assert resp.headers["tus-checksum-algorithm"] == "sha1,sha256,md5"
+
+    async def test_patch_with_valid_sha1(self, tus_client) -> None:
+        data = b"hello world"
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": str(len(data))},
+        )
+        location = create_resp.headers["location"]
+
+        digest = base64.b64encode(hashlib.sha1(data).digest()).decode()
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Checksum": f"sha1 {digest}",
+            },
+            content=data,
+        )
+        assert resp.status_code == 204
+
+    async def test_patch_with_valid_sha256(self, tus_client) -> None:
+        data = b"hello world"
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": str(len(data))},
+        )
+        location = create_resp.headers["location"]
+
+        digest = base64.b64encode(hashlib.sha256(data).digest()).decode()
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Checksum": f"sha256 {digest}",
+            },
+            content=data,
+        )
+        assert resp.status_code == 204
+
+    async def test_patch_with_valid_md5(self, tus_client) -> None:
+        data = b"hello world"
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": str(len(data))},
+        )
+        location = create_resp.headers["location"]
+
+        digest = base64.b64encode(hashlib.md5(data).digest()).decode()
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Checksum": f"md5 {digest}",
+            },
+            content=data,
+        )
+        assert resp.status_code == 204
+
+    async def test_patch_with_wrong_checksum(self, tus_client) -> None:
+        data = b"hello world"
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": str(len(data))},
+        )
+        location = create_resp.headers["location"]
+
+        wrong_digest = base64.b64encode(hashlib.sha1(b"wrong data").digest()).decode()
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Checksum": f"sha1 {wrong_digest}",
+            },
+            content=data,
+        )
+        assert resp.status_code == 460
+
+        # Verify offset unchanged
+        head_resp = await tus_client.head(location, headers={"Tus-Resumable": "1.0.0"})
+        assert head_resp.headers["upload-offset"] == "0"
+
+    async def test_patch_with_unsupported_algorithm(self, tus_client) -> None:
+        data = b"hello world"
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": str(len(data))},
+        )
+        location = create_resp.headers["location"]
+
+        digest = base64.b64encode(b"fake").decode()
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Checksum": f"crc32 {digest}",
+            },
+            content=data,
+        )
+        assert resp.status_code == 400
+
+    async def test_patch_with_malformed_header(self, tus_client) -> None:
+        data = b"hello world"
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": str(len(data))},
+        )
+        location = create_resp.headers["location"]
+
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Checksum": "nospace",
+            },
+            content=data,
+        )
+        assert resp.status_code == 400
+
+    async def test_patch_without_checksum_header(self, tus_client) -> None:
+        data = b"hello world"
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": str(len(data))},
+        )
+        location = create_resp.headers["location"]
+
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+            },
+            content=data,
+        )
+        assert resp.status_code == 204
+
+    async def test_creation_with_upload_valid_checksum(self, tus_client) -> None:
+        data = b"hello world"
+        digest = base64.b64encode(hashlib.sha256(data).digest()).decode()
+        resp = await tus_client.post(
+            "/files/",
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Length": str(len(data)),
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Checksum": f"sha256 {digest}",
+            },
+            content=data,
+        )
+        assert resp.status_code == 201
+        assert int(resp.headers["upload-offset"]) == len(data)
+
+    async def test_creation_with_upload_invalid_checksum(self, tus_client) -> None:
+        data = b"hello world"
+        wrong_digest = base64.b64encode(hashlib.sha256(b"wrong").digest()).decode()
+        resp = await tus_client.post(
+            "/files/",
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Length": str(len(data)),
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Checksum": f"sha256 {wrong_digest}",
+            },
+            content=data,
+        )
+        assert resp.status_code == 460
+
+
+class TestExpirationEnforcement:
+    async def test_head_expired_returns_410(self, tus_client, upload_dir) -> None:
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": "100"},
+        )
+        location = create_resp.headers["location"]
+        upload_id = _upload_id_from_location(location)
+
+        _expire_upload(upload_dir, upload_id)
+
+        resp = await tus_client.head(location, headers={"Tus-Resumable": "1.0.0"})
+        assert resp.status_code == 410
+
+    async def test_patch_expired_returns_410(self, tus_client, upload_dir) -> None:
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": "100"},
+        )
+        location = create_resp.headers["location"]
+        upload_id = _upload_id_from_location(location)
+
+        _expire_upload(upload_dir, upload_id)
+
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+            },
+            content=b"data",
+        )
+        assert resp.status_code == 410
+
+    async def test_delete_expired_returns_410(self, tus_client, upload_dir) -> None:
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": "100"},
+        )
+        location = create_resp.headers["location"]
+        upload_id = _upload_id_from_location(location)
+
+        _expire_upload(upload_dir, upload_id)
+
+        resp = await tus_client.delete(location, headers={"Tus-Resumable": "1.0.0"})
+        assert resp.status_code == 410
+
+    async def test_non_expired_upload_works(self, tus_client) -> None:
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": "11"},
+        )
+        location = create_resp.headers["location"]
+
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+            },
+            content=b"hello world",
+        )
+        assert resp.status_code == 204
+
+
+class TestContentLengthValidation:
+    async def test_patch_body_exceeds_upload_size(self, tus_client) -> None:
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": "5"},
+        )
+        location = create_resp.headers["location"]
+
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+                "Content-Length": "10",
+            },
+            content=b"0123456789",
+        )
+        assert resp.status_code == 400
+
+    async def test_patch_body_within_upload_size(self, tus_client) -> None:
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": "11"},
+        )
+        location = create_resp.headers["location"]
+
+        resp = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+            },
+            content=b"hello world",
+        )
+        assert resp.status_code == 204
+
+    async def test_second_chunk_overflows(self, tus_client) -> None:
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": "10"},
+        )
+        location = create_resp.headers["location"]
+
+        # First chunk: 6 bytes, fits within 10
+        patch1 = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+            },
+            content=b"hello ",
+        )
+        assert patch1.status_code == 204
+        assert patch1.headers["upload-offset"] == "6"
+
+        # Second chunk: 6 bytes at offset 6 → 12 > 10
+        patch2 = await tus_client.patch(
+            location,
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "6",
+                "Content-Type": "application/offset+octet-stream",
+                "Content-Length": "6",
+            },
+            content=b"world!",
+        )
+        assert patch2.status_code == 400

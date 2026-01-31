@@ -4,6 +4,8 @@ from typing import Any, cast
 
 from litestar.types import ASGIApp, Receive, Scope, Send
 
+from litestar_tus.config import SUPPORTED_CHECKSUM_ALGORITHMS
+
 
 class TUSMiddleware:
     def __init__(
@@ -74,6 +76,13 @@ class TUSMiddleware:
         ]
         if self.max_size is not None:
             headers.append((b"tus-max-size", str(self.max_size).encode()))
+        if "checksum" in self.extensions:
+            headers.append(
+                (
+                    b"tus-checksum-algorithm",
+                    ",".join(SUPPORTED_CHECKSUM_ALGORITHMS).encode(),
+                )
+            )
         return headers
 
     @staticmethod
