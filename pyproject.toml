@@ -1,0 +1,28 @@
+[project]
+name = "litestar-tus"
+version = "0.1.0"
+description = "TUS resumable upload protocol plugin for Litestar"
+readme = "README.md"
+authors = [
+    { name = "Enno Richter", email = "enno@nerdworks.de" }
+]
+requires-python = ">=3.13"
+dependencies = ["litestar>=2.0"]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.35"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-databases[minio]>=0.10",
+    "httpx>=0.27",
+    "anyio[trio]>=4.0",
+    "boto3>=1.35",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
