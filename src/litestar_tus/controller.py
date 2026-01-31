@@ -143,7 +143,10 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
 
                 if info.is_final:
                     safe_emit(request.app, TUSEvent.PRE_FINISH, upload_info=info)
-                    await upload.finish()
+                    try:
+                        await upload.finish()
+                    except ValueError as exc:
+                        raise HTTPException(status_code=409, detail=str(exc))
                     safe_emit(request.app, TUSEvent.POST_FINISH, upload_info=info)
 
             location = f"{config.path_prefix}/{upload_id}"
@@ -226,7 +229,10 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
 
             if info.is_final:
                 safe_emit(request.app, TUSEvent.PRE_FINISH, upload_info=info)
-                await upload.finish()
+                try:
+                    await upload.finish()
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc))
                 safe_emit(request.app, TUSEvent.POST_FINISH, upload_info=info)
 
             response_headers: dict[str, str] = {

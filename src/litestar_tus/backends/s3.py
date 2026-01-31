@@ -24,6 +24,7 @@ class S3Upload:
         key_prefix: str,
         lock: anyio.Lock,
         part_size: int,
+        info_etag: str | None = None,
     ) -> None:
         self._info = info
         self._client = client
@@ -31,6 +32,7 @@ class S3Upload:
         self._key_prefix = key_prefix
         self._lock = lock
         self._part_size = part_size
+        self._info_etag = info_etag
 
     @property
     def _data_key(self) -> str:
@@ -46,11 +48,29 @@ class S3Upload:
 
     async def _save_info(self) -> None:
         body = json.dumps(self._info.to_dict()).encode("utf-8")
-        await anyio.to_thread.run_sync(
-            lambda: self._client.put_object(
-                Bucket=self._bucket, Key=self._info_key, Body=body
-            )
-        )
+
+        def _put() -> str:
+            kwargs: dict[str, Any] = {
+                "Bucket": self._bucket,
+                "Key": self._info_key,
+                "Body": body,
+            }
+            if self._info_etag is not None:
+                kwargs["IfMatch"] = self._info_etag
+            else:
+                kwargs["IfNoneMatch"] = "*"
+            try:
+                resp = self._client.put_object(**kwargs)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in {"PreconditionFailed", "412"}:
+                    raise ValueError(
+                        f"Concurrent modification detected on upload {self._info.id}"
+                    ) from exc
+                raise
+            return resp["ETag"]
+
+        self._info_etag = await anyio.to_thread.run_sync(_put)
 
     async def _upload_part(
         self, upload_id: str, part_number: int, body: bytes
@@ -149,12 +169,13 @@ class S3Upload:
             return total_written
 
     async def get_info(self) -> UploadInfo:
-        def _get() -> bytes:
+        def _get() -> tuple[bytes, str]:
             resp = self._client.get_object(Bucket=self._bucket, Key=self._info_key)
-            return resp["Body"].read()
+            return resp["Body"].read(), resp["ETag"]
 
-        content = await anyio.to_thread.run_sync(_get)
+        content, etag = await anyio.to_thread.run_sync(_get)
         self._info = UploadInfo.from_dict(json.loads(content))
+        self._info_etag = etag
         return self._info
 
     async def finish(self) -> None:
@@ -204,9 +225,9 @@ _DEFAULT_PART_SIZE = 10 * 1024 * 1024  # 10 MiB
 class S3StorageBackend:
     """S3-based storage backend using multipart upload.
 
-    Concurrency note: uses process-local locks (``anyio.Lock``). Only safe
-    with a single worker process. For multi-worker deployments, use sticky
-    sessions or a distributed lock.
+    Uses S3 conditional writes (``IfMatch`` ETag) for optimistic concurrency
+    control. Process-local ``anyio.Lock`` reduces unnecessary S3 round-trips
+    within a single worker.
     """
 
     def __init__(
@@ -257,10 +278,10 @@ class S3StorageBackend:
     async def get_upload(self, upload_id: str) -> S3Upload:
         info_key = f"{self._key_prefix}{upload_id}.info"
 
-        def _get() -> bytes:
+        def _get() -> tuple[bytes, str]:
             try:
                 resp = self._client.get_object(Bucket=self._bucket, Key=info_key)
-                return resp["Body"].read()
+                return resp["Body"].read(), resp["ETag"]
             except self._client.exceptions.NoSuchKey:
                 raise FileNotFoundError(f"Upload {upload_id} not found")
             except ClientError as exc:
@@ -269,7 +290,7 @@ class S3StorageBackend:
                     raise FileNotFoundError(f"Upload {upload_id} not found")
                 raise
 
-        content = await anyio.to_thread.run_sync(_get)
+        content, etag = await anyio.to_thread.run_sync(_get)
         info = UploadInfo.from_dict(json.loads(content))
         return S3Upload(
             info,
@@ -278,6 +299,7 @@ class S3StorageBackend:
             key_prefix=self._key_prefix,
             lock=self._get_lock(upload_id),
             part_size=self._part_size,
+            info_etag=etag,
         )
 
     async def terminate_upload(self, upload_id: str) -> None:

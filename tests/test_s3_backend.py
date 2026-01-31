@@ -330,3 +330,70 @@ class TestS3RollingBuffer:
 
         with pytest.raises(FileNotFoundError):
             await s3_backend_5mib.get_upload("s3-rolling-5")
+
+
+class TestS3OptimisticLocking:
+    async def test_stale_etag_raises_on_save_info(
+        self, s3_backend: Any, s3_client: Any, s3_bucket: str
+    ) -> None:
+        """Overwriting .info externally changes its ETag; next _save_info fails."""
+        from litestar_tus.models import UploadInfo
+
+        info = UploadInfo(id="s3-etag-1", size=100)
+        upload = await s3_backend.create_upload(info)
+
+        # Externally overwrite the .info object to change its ETag
+        s3_client.put_object(
+            Bucket=s3_bucket,
+            Key="uploads/s3-etag-1.info",
+            Body=b'{"id":"s3-etag-1","size":100,"offset":0}',
+        )
+
+        # upload still holds the old ETag — _save_info should fail
+        with pytest.raises(ValueError, match="Concurrent modification detected"):
+            await upload._save_info()
+
+    async def test_etag_updates_through_writes(self, s3_backend: Any) -> None:
+        """ETag changes after each successful _save_info call."""
+        from litestar_tus.models import UploadInfo
+
+        info = UploadInfo(id="s3-etag-2", size=100)
+        upload = await s3_backend.create_upload(info)
+        etag_after_create = upload._info_etag
+        assert etag_after_create is not None
+
+        await upload.write_chunk(0, _aiter(b"hello"))
+        etag_after_write1 = upload._info_etag
+        assert etag_after_write1 is not None
+        assert etag_after_write1 != etag_after_create
+
+        await upload.write_chunk(5, _aiter(b"world"))
+        etag_after_write2 = upload._info_etag
+        assert etag_after_write2 is not None
+        assert etag_after_write2 != etag_after_write1
+
+    async def test_get_info_refreshes_etag(self, s3_backend: Any) -> None:
+        """get_info() populates _info_etag from the S3 response."""
+        from litestar_tus.models import UploadInfo
+
+        info = UploadInfo(id="s3-etag-3", size=100)
+        upload = await s3_backend.create_upload(info)
+        original_etag = upload._info_etag
+
+        loaded = await upload.get_info()
+        assert upload._info_etag is not None
+        assert upload._info_etag == original_etag
+        assert loaded.id == "s3-etag-3"
+
+    async def test_double_create_prevented(self, s3_backend: Any) -> None:
+        """Re-creating with IfNoneMatch='*' should fail when .info already exists."""
+        from litestar_tus.models import UploadInfo
+
+        info = UploadInfo(id="s3-etag-4", size=100)
+        upload = await s3_backend.create_upload(info)
+
+        # Reset etag to None so _save_info uses IfNoneMatch='*'
+        upload._info_etag = None
+
+        with pytest.raises(ValueError, match="Concurrent modification detected"):
+            await upload._save_info()
