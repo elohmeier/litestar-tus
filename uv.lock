@@ -360,6 +360,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+s3 = [
+    { name = "boto3" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "anyio", extra = ["trio"] },
     { name = "boto3" },
@@ -370,24 +375,25 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
-s3 = [
-    { name = "boto3" },
-]
 
 [package.metadata]
 requires-dist = [
-    { name = "anyio", extras = ["trio"], marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "boto3", marker = "extra == 'dev'", specifier = ">=1.35" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.35" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "litestar", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
-    { name = "pytest-databases", extras = ["minio"], marker = "extra == 'dev'", specifier = ">=0.10" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
-    { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a7" },
 ]
-provides-extras = ["s3", "dev"]
+provides-extras = ["s3"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "anyio", extras = ["trio"], specifier = ">=4.0" },
+    { name = "boto3", specifier = ">=1.35" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-databases", extras = ["minio"], specifier = ">=0.10" },
+    { name = "ruff", specifier = ">=0.11" },
+    { name = "ty", specifier = ">=0.0.1a7" },
+]
 
 [[package]]
 name = "markdown-it-py"
