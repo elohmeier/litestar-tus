@@ -8,8 +8,17 @@ import pytest
 pytest_plugins = ["pytest_databases.docker.minio"]
 
 
+_5MIB = 5 * 1024 * 1024
+
+
 async def _aiter(data: bytes):
     yield data
+
+
+async def _aiter_chunks(data: bytes, chunk_size: int = 1024 * 1024):
+    """Yield data in fixed-size chunks to simulate streaming."""
+    for i in range(0, len(data), chunk_size):
+        yield data[i : i + chunk_size]
 
 
 @pytest.fixture()
@@ -40,6 +49,15 @@ def s3_backend(s3_client: Any, s3_bucket: str):
     from litestar_tus.backends.s3 import S3StorageBackend
 
     return S3StorageBackend(client=s3_client, bucket=s3_bucket, key_prefix="uploads/")
+
+
+@pytest.fixture()
+def s3_backend_5mib(s3_client: Any, s3_bucket: str):
+    from litestar_tus.backends.s3 import S3StorageBackend
+
+    return S3StorageBackend(
+        client=s3_client, bucket=s3_bucket, key_prefix="uploads/", part_size=_5MIB
+    )
 
 
 class TestS3StorageBackend:
@@ -210,3 +228,105 @@ class TestS3Locking:
         loaded = await upload.get_info()
         assert loaded.offset == len(data1) + len(data2)
         assert loaded.is_final is True
+
+
+class TestS3RollingBuffer:
+    async def test_large_stream_produces_multiple_parts(
+        self, s3_backend_5mib: Any
+    ) -> None:
+        """A single write_chunk larger than part_size flushes multiple S3 parts."""
+        from litestar_tus.models import UploadInfo
+
+        total_size = _5MIB * 2 + _5MIB // 2  # 12.5 MiB → 2 full parts + 2.5 MiB pending
+        data = b"A" * total_size
+        info = UploadInfo(id="s3-rolling-1", size=total_size)
+        upload = await s3_backend_5mib.create_upload(info)
+
+        written = await upload.write_chunk(0, _aiter_chunks(data))
+        assert written == total_size
+
+        loaded = await upload.get_info()
+        assert loaded.offset == total_size
+        assert len(loaded.storage_meta["parts"]) == 2
+        assert loaded.storage_meta["pending_size"] == _5MIB // 2
+
+    async def test_cross_call_pending_accumulation(self, s3_backend_5mib: Any) -> None:
+        """Multiple small writes accumulate in pending, flush on part boundary."""
+        from litestar_tus.models import UploadInfo
+
+        chunk_a = b"B" * (_5MIB // 2)  # 2.5 MiB
+        chunk_b = b"C" * (_5MIB // 2)  # 2.5 MiB
+        chunk_c = b"D" * (_5MIB // 2)  # 2.5 MiB
+        total = len(chunk_a) + len(chunk_b) + len(chunk_c)
+        info = UploadInfo(id="s3-rolling-2", size=total)
+        upload = await s3_backend_5mib.create_upload(info)
+
+        # First write: 2.5 MiB → all goes to pending, no parts
+        await upload.write_chunk(0, _aiter(chunk_a))
+        loaded = await upload.get_info()
+        assert len(loaded.storage_meta["parts"]) == 0
+        assert loaded.storage_meta["pending_size"] == len(chunk_a)
+
+        # Second write: 2.5 MiB → pending (2.5) + new (2.5) = 5 MiB → flush 1 part, 0 pending
+        await upload.write_chunk(len(chunk_a), _aiter(chunk_b))
+        loaded = await upload.get_info()
+        assert len(loaded.storage_meta["parts"]) == 1
+        assert loaded.storage_meta["pending_size"] == 0
+
+        # Third write: 2.5 MiB → all goes to pending
+        await upload.write_chunk(len(chunk_a) + len(chunk_b), _aiter(chunk_c))
+        loaded = await upload.get_info()
+        assert len(loaded.storage_meta["parts"]) == 1
+        assert loaded.storage_meta["pending_size"] == len(chunk_c)
+
+    async def test_finish_flushes_pending(self, s3_backend_5mib: Any) -> None:
+        """Small write + finish → pending flushed as final part, data readable."""
+        from litestar_tus.models import UploadInfo
+
+        data = b"E" * 1000
+        info = UploadInfo(id="s3-rolling-3", size=len(data))
+        upload = await s3_backend_5mib.create_upload(info)
+
+        await upload.write_chunk(0, _aiter(data))
+        loaded = await upload.get_info()
+        assert len(loaded.storage_meta["parts"]) == 0
+        assert loaded.storage_meta["pending_size"] == len(data)
+
+        await upload.finish()
+        loaded = await upload.get_info()
+        assert loaded.is_final is True
+        assert len(loaded.storage_meta["parts"]) == 1
+
+        result = b""
+        async for chunk in upload.get_reader():
+            result += chunk
+        assert result == data
+
+    async def test_part_size_validation(self, s3_client: Any, s3_bucket: str) -> None:
+        """part_size < 5 MiB raises ValueError."""
+        from litestar_tus.backends.s3 import S3StorageBackend
+
+        with pytest.raises(ValueError, match="part_size must be >= "):
+            S3StorageBackend(
+                client=s3_client,
+                bucket=s3_bucket,
+                key_prefix="uploads/",
+                part_size=1024 * 1024,  # 1 MiB — too small
+            )
+
+    async def test_terminate_cleans_pending(self, s3_backend_5mib: Any) -> None:
+        """Terminate after a small write cleans up the .pending object."""
+        from litestar_tus.models import UploadInfo
+
+        data = b"F" * 1000
+        info = UploadInfo(id="s3-rolling-5", size=10000)
+        upload = await s3_backend_5mib.create_upload(info)
+
+        await upload.write_chunk(0, _aiter(data))
+        loaded = await upload.get_info()
+        assert loaded.storage_meta["pending_size"] == len(data)
+
+        await s3_backend_5mib.terminate_upload("s3-rolling-5")
+
+        with pytest.raises(FileNotFoundError):
+            await s3_backend_5mib.get_upload("s3-rolling-5")

@@ -23,12 +23,14 @@ class S3Upload:
         bucket: str,
         key_prefix: str,
         lock: anyio.Lock,
+        part_size: int,
     ) -> None:
         self._info = info
         self._client = client
         self._bucket = bucket
         self._key_prefix = key_prefix
         self._lock = lock
+        self._part_size = part_size
 
     @property
     def _data_key(self) -> str:
@@ -38,6 +40,10 @@ class S3Upload:
     def _info_key(self) -> str:
         return f"{self._key_prefix}{self._info.id}.info"
 
+    @property
+    def _pending_key(self) -> str:
+        return f"{self._key_prefix}{self._info.id}.pending"
+
     async def _save_info(self) -> None:
         body = json.dumps(self._info.to_dict()).encode("utf-8")
         await anyio.to_thread.run_sync(
@@ -46,19 +52,56 @@ class S3Upload:
             )
         )
 
+    async def _upload_part(
+        self, upload_id: str, part_number: int, body: bytes
+    ) -> dict[str, Any]:
+        def _do_upload() -> dict[str, Any]:
+            resp = self._client.upload_part(
+                Bucket=self._bucket,
+                Key=self._data_key,
+                UploadId=upload_id,
+                PartNumber=part_number,
+                Body=body,
+            )
+            return {"ETag": resp["ETag"], "PartNumber": part_number}
+
+        return await anyio.to_thread.run_sync(_do_upload)
+
+    async def _get_pending(self) -> bytes:
+        def _get() -> bytes:
+            try:
+                resp = self._client.get_object(
+                    Bucket=self._bucket, Key=self._pending_key
+                )
+                return resp["Body"].read()
+            except self._client.exceptions.NoSuchKey:
+                return b""
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in {"NoSuchKey", "404", "NotFound"}:
+                    return b""
+                raise
+
+        return await anyio.to_thread.run_sync(_get)
+
+    async def _put_pending(self, data: bytes) -> None:
+        await anyio.to_thread.run_sync(
+            lambda: self._client.put_object(
+                Bucket=self._bucket, Key=self._pending_key, Body=data
+            )
+        )
+
+    async def _delete_pending(self) -> None:
+        def _del() -> None:
+            try:
+                self._client.delete_object(Bucket=self._bucket, Key=self._pending_key)
+            except Exception:
+                pass
+
+        await anyio.to_thread.run_sync(_del)
+
     async def write_chunk(self, offset: int, src: AsyncIterator[bytes]) -> int:
-        # Collect all data from the async iterator before acquiring the lock
-        data = bytearray()
-        async for chunk in src:
-            data.extend(chunk)
-
-        if not data:
-            return 0
-
-        data_bytes = bytes(data)
-
         async with self._lock:
-            # Re-read authoritative state from S3
             info = await self.get_info()
 
             if offset != info.offset:
@@ -67,28 +110,43 @@ class S3Upload:
 
             upload_id = str(info.storage_meta.get("multipart_upload_id", ""))
             parts: list[dict[str, Any]] = list(info.storage_meta.get("parts", []))  # type: ignore[arg-type]
-            part_number = len(parts) + 1
+            pending_size: int = info.storage_meta.get("pending_size", 0)  # type: ignore[assignment]
 
-            def _upload_part() -> dict[str, Any]:
-                resp = self._client.upload_part(
-                    Bucket=self._bucket,
-                    Key=self._data_key,
-                    UploadId=upload_id,
-                    PartNumber=part_number,
-                    Body=data_bytes,
-                )
-                return {"ETag": resp["ETag"], "PartNumber": part_number}
+            # Load pending buffer from previous call if any
+            buf = bytearray()
+            if pending_size > 0:
+                buf.extend(await self._get_pending())
 
-            part = await anyio.to_thread.run_sync(_upload_part)
-            parts.append(part)
+            total_written = 0
+            async for chunk in src:
+                buf.extend(chunk)
+                total_written += len(chunk)
 
-            info.offset += len(data_bytes)
+                # Flush full parts as they accumulate
+                while len(buf) >= self._part_size:
+                    part_number = len(parts) + 1
+                    part_data = bytes(buf[: self._part_size])
+                    part = await self._upload_part(upload_id, part_number, part_data)
+                    parts.append(part)
+                    del buf[: self._part_size]
+
+            if total_written == 0 and pending_size == 0:
+                return 0
+
+            # Store leftover as pending or delete if empty
+            if buf:
+                await self._put_pending(bytes(buf))
+            elif pending_size > 0:
+                await self._delete_pending()
+
+            info.offset += total_written
             info.storage_meta["parts"] = parts
+            info.storage_meta["pending_size"] = len(buf)
             if info.size is not None and info.offset >= info.size:
                 info.is_final = True
             self._info = info
             await self._save_info()
-            return len(data_bytes)
+            return total_written
 
     async def get_info(self) -> UploadInfo:
         def _get() -> bytes:
@@ -104,6 +162,16 @@ class S3Upload:
             info = await self.get_info()
             upload_id = str(info.storage_meta.get("multipart_upload_id", ""))
             parts: list[dict[str, Any]] = list(info.storage_meta.get("parts", []))  # type: ignore[arg-type]
+            pending_size: int = info.storage_meta.get("pending_size", 0)  # type: ignore[assignment]
+
+            # Flush any pending data as the final part
+            if pending_size > 0:
+                pending_data = await self._get_pending()
+                if pending_data:
+                    part_number = len(parts) + 1
+                    part = await self._upload_part(upload_id, part_number, pending_data)
+                    parts.append(part)
+                await self._delete_pending()
 
             def _complete() -> None:
                 self._client.complete_multipart_upload(
@@ -115,6 +183,8 @@ class S3Upload:
 
             await anyio.to_thread.run_sync(_complete)
             info.is_final = True
+            info.storage_meta["parts"] = parts
+            info.storage_meta["pending_size"] = 0
             self._info = info
             await self._save_info()
 
@@ -127,6 +197,10 @@ class S3Upload:
         yield data
 
 
+_MIN_PART_SIZE = 5 * 1024 * 1024  # 5 MiB — AWS S3 minimum for multipart parts
+_DEFAULT_PART_SIZE = 10 * 1024 * 1024  # 10 MiB
+
+
 class S3StorageBackend:
     """S3-based storage backend using multipart upload.
 
@@ -136,11 +210,19 @@ class S3StorageBackend:
     """
 
     def __init__(
-        self, client: S3Client, bucket: str, key_prefix: str = "tus-uploads/"
+        self,
+        client: S3Client,
+        bucket: str,
+        key_prefix: str = "tus-uploads/",
+        part_size: int = _DEFAULT_PART_SIZE,
     ) -> None:
+        if part_size < _MIN_PART_SIZE:
+            msg = f"part_size must be >= {_MIN_PART_SIZE} (5 MiB), got {part_size}"
+            raise ValueError(msg)
         self._client = client
         self._bucket = bucket
         self._key_prefix = key_prefix
+        self._part_size = part_size
         self._locks: dict[str, anyio.Lock] = {}
 
     def _get_lock(self, upload_id: str) -> anyio.Lock:
@@ -167,6 +249,7 @@ class S3StorageBackend:
             bucket=self._bucket,
             key_prefix=self._key_prefix,
             lock=self._get_lock(info.id),
+            part_size=self._part_size,
         )
         await upload._save_info()
         return upload
@@ -194,6 +277,7 @@ class S3StorageBackend:
             bucket=self._bucket,
             key_prefix=self._key_prefix,
             lock=self._get_lock(upload_id),
+            part_size=self._part_size,
         )
 
     async def terminate_upload(self, upload_id: str) -> None:
@@ -234,13 +318,16 @@ class S3StorageBackend:
 
                 await anyio.to_thread.run_sync(_abort)
 
-            def _delete_info() -> None:
-                try:
-                    self._client.delete_object(Bucket=self._bucket, Key=info_key)
-                except Exception:
-                    pass
+            pending_key = f"{self._key_prefix}{upload_id}.pending"
 
-            await anyio.to_thread.run_sync(_delete_info)
+            def _delete_info_and_pending() -> None:
+                for key in (info_key, pending_key):
+                    try:
+                        self._client.delete_object(Bucket=self._bucket, Key=key)
+                    except Exception:
+                        pass
+
+            await anyio.to_thread.run_sync(_delete_info_and_pending)
 
             if info.is_final:
 
