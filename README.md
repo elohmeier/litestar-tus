@@ -54,6 +54,7 @@ TUSConfig(
         "checksum",
     ),
     storage_backend=None,         # Custom StorageBackend instance (default: FileStorageBackend)
+    metadata_override=None,       # Optional hook to override Upload-Metadata based on the Request
 )
 ```
 
@@ -165,6 +166,23 @@ Available events:
 | `POST_TERMINATE` | After an upload is deleted                |
 
 All events receive `upload_info: UploadInfo` as a keyword argument.
+
+## Metadata Override
+
+Override or inject `Upload-Metadata` using the incoming request before the upload is created:
+
+```python
+from litestar import Request
+from litestar_tus import TUSConfig, TUSPlugin
+
+async def metadata_override(request: Request, metadata: dict[str, bytes]) -> dict[str, bytes]:
+    metadata["user_id"] = request.headers.get("authorization", "").encode()
+    return metadata
+
+app = Litestar(
+    plugins=[TUSPlugin(TUSConfig(metadata_override=metadata_override))],
+)
+```
 
 ## License
 

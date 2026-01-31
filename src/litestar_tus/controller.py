@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
+from typing import cast
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 
@@ -16,7 +18,7 @@ from litestar_tus._utils import (
 )
 from litestar_tus.config import SUPPORTED_CHECKSUM_ALGORITHMS, TUSConfig
 from litestar_tus.events import TUSEvent
-from litestar_tus.models import UploadInfo
+from litestar_tus.models import UploadInfo, UploadMetadata
 from litestar_tus.protocols import StorageBackend
 
 
@@ -98,6 +100,12 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
 
             metadata_header = request.headers.get("upload-metadata", "")
             metadata = parse_metadata_header(metadata_header)
+            if config.metadata_override is not None:
+                override_result = config.metadata_override(request, metadata)
+                if inspect.isawaitable(override_result):
+                    metadata = cast(UploadMetadata, await override_result)
+                else:
+                    metadata = cast(UploadMetadata, override_result)
 
             now = datetime.now(tz=timezone.utc)
             expires_at: datetime | None = None
