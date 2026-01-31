@@ -7,6 +7,7 @@ from pathlib import Path
 
 import anyio
 import anyio.to_thread
+from anyio import from_thread
 
 from litestar_tus.models import UploadInfo
 
@@ -52,14 +53,47 @@ class FileUpload:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
 
-    async def write_chunk(self, offset: int, src: AsyncIterator[bytes]) -> int:
-        chunks: list[bytes] = []
-        async for chunk in src:
-            chunks.append(chunk)
-        data = b"".join(chunks)
+    def _write_chunk_stream_locked(self, offset: int, src: AsyncIterator[bytes]) -> int:
+        async def _next_chunk() -> bytes | None:
+            try:
+                return await src.__anext__()
+            except StopAsyncIteration:
+                return None
 
+        lock_fd = open(self._lock_path, "w")  # noqa: SIM115
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            # Re-read authoritative state from disk
+            info = UploadInfo.from_dict(json.loads(self._info_path.read_bytes()))
+
+            if offset != info.offset:
+                msg = f"Offset mismatch: expected {info.offset}, got {offset}"
+                raise ValueError(msg)
+
+            bytes_written = 0
+            with open(self._data_path, "ab") as f:
+                while True:
+                    chunk = from_thread.run(_next_chunk)
+                    if chunk is None:
+                        break
+                    f.write(chunk)
+                    bytes_written += len(chunk)
+
+            info.offset += bytes_written
+            if info.size is not None and info.offset >= info.size:
+                info.is_final = True
+
+            self._info_path.write_bytes(json.dumps(info.to_dict()).encode("utf-8"))
+            self._info = info
+            return bytes_written
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+    async def write_chunk(self, offset: int, src: AsyncIterator[bytes]) -> int:
         return await anyio.to_thread.run_sync(
-            lambda: self._write_chunk_locked(offset, data)
+            lambda: self._write_chunk_stream_locked(offset, src)
         )
 
     async def get_info(self) -> UploadInfo:
