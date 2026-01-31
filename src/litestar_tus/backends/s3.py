@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import anyio.to_thread
 
 from litestar_tus.models import UploadInfo
 
-if TYPE_CHECKING:
-    from mypy_boto3_s3.client import S3Client
+# boto3 S3 client type — use Any to avoid requiring mypy_boto3_s3 stubs
+S3Client = Any
 
 
 class S3Upload:
-    def __init__(self, info: UploadInfo, *, client: S3Client, bucket: str, key_prefix: str) -> None:
+    def __init__(
+        self, info: UploadInfo, *, client: S3Client, bucket: str, key_prefix: str
+    ) -> None:
         self._info = info
         self._client = client
         self._bucket = bucket
@@ -30,7 +32,9 @@ class S3Upload:
     async def _save_info(self) -> None:
         body = json.dumps(self._info.to_dict()).encode("utf-8")
         await anyio.to_thread.run_sync(
-            lambda: self._client.put_object(Bucket=self._bucket, Key=self._info_key, Body=body)
+            lambda: self._client.put_object(
+                Bucket=self._bucket, Key=self._info_key, Body=body
+            )
         )
 
     async def write_chunk(self, offset: int, src: AsyncIterator[bytes]) -> int:
@@ -107,7 +111,9 @@ class S3Upload:
 
 
 class S3StorageBackend:
-    def __init__(self, client: S3Client, bucket: str, key_prefix: str = "tus-uploads/") -> None:
+    def __init__(
+        self, client: S3Client, bucket: str, key_prefix: str = "tus-uploads/"
+    ) -> None:
         self._client = client
         self._bucket = bucket
         self._key_prefix = key_prefix
@@ -116,14 +122,18 @@ class S3StorageBackend:
         data_key = f"{self._key_prefix}{info.id}"
 
         def _create_multipart() -> str:
-            resp = self._client.create_multipart_upload(Bucket=self._bucket, Key=data_key)
+            resp = self._client.create_multipart_upload(
+                Bucket=self._bucket, Key=data_key
+            )
             return resp["UploadId"]
 
         upload_id = await anyio.to_thread.run_sync(_create_multipart)
         info.storage_meta["multipart_upload_id"] = upload_id
         info.storage_meta["parts"] = []
 
-        upload = S3Upload(info, client=self._client, bucket=self._bucket, key_prefix=self._key_prefix)
+        upload = S3Upload(
+            info, client=self._client, bucket=self._bucket, key_prefix=self._key_prefix
+        )
         await upload._save_info()
         return upload
 
@@ -139,7 +149,9 @@ class S3StorageBackend:
 
         content = await anyio.to_thread.run_sync(_get)
         info = UploadInfo.from_dict(json.loads(content))
-        return S3Upload(info, client=self._client, bucket=self._bucket, key_prefix=self._key_prefix)
+        return S3Upload(
+            info, client=self._client, bucket=self._bucket, key_prefix=self._key_prefix
+        )
 
     async def terminate_upload(self, upload_id: str) -> None:
         info_key = f"{self._key_prefix}{upload_id}.info"

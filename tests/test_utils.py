@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import base64
 
-from litestar_tus._utils import encode_metadata, generate_upload_id, parse_metadata_header
+from litestar_tus._utils import (
+    encode_metadata,
+    generate_upload_id,
+    parse_metadata_header,
+)
 
 
 class TestGenerateUploadId:

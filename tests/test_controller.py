@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import base64
 
-import pytest
-
 
 class TestServerInfo:
     async def test_options_returns_capabilities(self, tus_client) -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,5 +14,10 @@ class TUSConfig:
     upload_dir: Path | str = Path("./uploads")
     path_prefix: str = "/files"
     max_size: int | None = None
-    extensions: tuple[str, ...] = ("creation", "creation-with-upload", "termination", "expiration")
+    extensions: tuple[str, ...] = (
+        "creation",
+        "creation-with-upload",
+        "termination",
+        "expiration",
+    )
     expiration_seconds: int | None = 86400

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from litestar import Litestar
 from litestar.testing import AsyncTestClient
 
@@ -23,7 +22,7 @@ class TestPluginRegistration:
 
     def test_custom_storage_backend(self, upload_dir: Path) -> None:
         backend = FileStorageBackend(upload_dir)
-        config = TUSConfig(storage_backend=backend, path_prefix="/files")
+        config = TUSConfig(storage_backend=backend, path_prefix="/files")  # type: ignore[arg-type]
         app = Litestar(plugins=[TUSPlugin(config)])
         route_paths = {r.path for r in app.routes}
         assert any("/files" in p for p in route_paths)
@@ -67,7 +66,9 @@ class TestPluginEvents:
         async def on_finish(upload_info: UploadInfo) -> None:
             received.append("post_finish")
 
-        config = TUSConfig(upload_dir=upload_dir, path_prefix="/files", max_size=1024 * 1024)
+        config = TUSConfig(
+            upload_dir=upload_dir, path_prefix="/files", max_size=1024 * 1024
+        )
         app = Litestar(
             plugins=[TUSPlugin(config)],
             listeners=[on_create, on_receive, on_finish],
@@ -97,6 +98,7 @@ class TestPluginEvents:
 
             # Give the event system a moment to process
             import anyio
+
             await anyio.sleep(0.1)
 
         assert "post_create" in received

@@ -29,7 +29,9 @@ class TUSPlugin(InitPluginProtocol):
 
             storage = FileStorageBackend(config.upload_dir)
 
-        app_config.dependencies["tus_storage"] = Provide(lambda: storage, use_cache=True, sync_to_thread=False)
+        app_config.dependencies["tus_storage"] = Provide(
+            lambda: storage, use_cache=True, sync_to_thread=False
+        )
 
         controller_cls = build_tus_controller(config)
         app_config.route_handlers.append(controller_cls)

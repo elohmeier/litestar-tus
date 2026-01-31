@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 
 UploadMetadata = dict[str, bytes]
@@ -27,7 +28,10 @@ class UploadInfo:
             "id": self.id,
             "offset": self.offset,
             "size": self.size,
-            "metadata": {k: v.decode("utf-8", errors="surrogateescape") for k, v in self.metadata.items()},
+            "metadata": {
+                k: v.decode("utf-8", errors="surrogateescape")
+                for k, v in self.metadata.items()
+            },
             "is_final": self.is_final,
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
@@ -35,29 +39,38 @@ class UploadInfo:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> UploadInfo:
-        metadata_raw = data.get("metadata", {})
-        assert isinstance(metadata_raw, dict)
-        metadata: UploadMetadata = {k: v.encode("utf-8", errors="surrogateescape") for k, v in metadata_raw.items()}
+    def from_dict(cls, data: dict[str, Any]) -> UploadInfo:
+        metadata_raw: dict[str, str] = data.get("metadata", {})
+        metadata: UploadMetadata = {
+            k: v.encode("utf-8", errors="surrogateescape")
+            for k, v in metadata_raw.items()
+        }
 
         created_at_raw = data.get("created_at")
-        created_at = datetime.fromisoformat(created_at_raw) if isinstance(created_at_raw, str) else _utcnow()
+        created_at = (
+            datetime.fromisoformat(created_at_raw)
+            if isinstance(created_at_raw, str)
+            else _utcnow()
+        )
 
         expires_at_raw = data.get("expires_at")
-        expires_at = datetime.fromisoformat(expires_at_raw) if isinstance(expires_at_raw, str) else None
+        expires_at = (
+            datetime.fromisoformat(expires_at_raw)
+            if isinstance(expires_at_raw, str)
+            else None
+        )
 
-        storage_meta_raw = data.get("storage_meta", {})
-        assert isinstance(storage_meta_raw, dict)
+        storage_meta: dict[str, object] = data.get("storage_meta", {})
 
         return cls(
             id=str(data["id"]),
-            offset=int(data.get("offset", 0)),  # type: ignore[arg-type]
-            size=int(data["size"]) if data.get("size") is not None else None,  # type: ignore[arg-type]
+            offset=int(data.get("offset", 0)),
+            size=int(data["size"]) if data.get("size") is not None else None,
             metadata=metadata,
             is_final=bool(data.get("is_final", False)),
             created_at=created_at,
             expires_at=expires_at,
-            storage_meta=storage_meta_raw,
+            storage_meta=storage_meta,
         )
 
 

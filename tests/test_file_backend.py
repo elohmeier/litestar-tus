@@ -18,7 +18,9 @@ def backend(upload_dir: Path) -> FileStorageBackend:
 
 
 class TestFileStorageBackend:
-    async def test_create_upload(self, backend: FileStorageBackend, upload_dir: Path) -> None:
+    async def test_create_upload(
+        self, backend: FileStorageBackend, upload_dir: Path
+    ) -> None:
         info = UploadInfo(id="test-1", size=100)
         upload = await backend.create_upload(info)
 
@@ -30,7 +32,9 @@ class TestFileStorageBackend:
         assert loaded.size == 100
         assert loaded.offset == 0
 
-    async def test_write_chunk(self, backend: FileStorageBackend, upload_dir: Path) -> None:
+    async def test_write_chunk(
+        self, backend: FileStorageBackend, upload_dir: Path
+    ) -> None:
         info = UploadInfo(id="test-2", size=10)
         upload = await backend.create_upload(info)
 
@@ -51,7 +55,9 @@ class TestFileStorageBackend:
         assert loaded.offset == 10
         assert loaded.is_final is True
 
-    async def test_write_chunk_offset_mismatch(self, backend: FileStorageBackend) -> None:
+    async def test_write_chunk_offset_mismatch(
+        self, backend: FileStorageBackend
+    ) -> None:
         info = UploadInfo(id="test-4", size=10)
         upload = await backend.create_upload(info)
 
@@ -78,7 +84,9 @@ class TestFileStorageBackend:
             data += chunk
         assert data == b"hello"
 
-    async def test_terminate_upload(self, backend: FileStorageBackend, upload_dir: Path) -> None:
+    async def test_terminate_upload(
+        self, backend: FileStorageBackend, upload_dir: Path
+    ) -> None:
         info = UploadInfo(id="test-7", size=10)
         await backend.create_upload(info)
 

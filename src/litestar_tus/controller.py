@@ -32,7 +32,9 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             if upload_length_header is not None:
                 size = int(upload_length_header)
                 if config.max_size is not None and size > config.max_size:
-                    raise HTTPException(status_code=413, detail="Upload exceeds maximum size")
+                    raise HTTPException(
+                        status_code=413, detail="Upload exceeds maximum size"
+                    )
 
             metadata_header = request.headers.get("upload-metadata", "")
             metadata = parse_metadata_header(metadata_header)
@@ -81,7 +83,9 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             return Response(content=None, status_code=201, headers=response_headers)
 
         @head("/{upload_id:str}")
-        async def get_upload_info(self, upload_id: str, tus_storage: Any) -> Response[None]:
+        async def get_upload_info(
+            self, upload_id: str, tus_storage: Any
+        ) -> Response[None]:
             try:
                 upload = await tus_storage.get_upload(upload_id)
             except FileNotFoundError:
@@ -102,14 +106,18 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             return Response(content=None, status_code=200, headers=response_headers)
 
         @patch("/{upload_id:str}", status_code=204)
-        async def write_chunk(self, upload_id: str, request: Request, tus_storage: Any) -> Response[None]:
+        async def write_chunk(
+            self, upload_id: str, request: Request, tus_storage: Any
+        ) -> Response[None]:
             content_type = request.headers.get("content-type", "")
             if content_type != "application/offset+octet-stream":
                 raise HTTPException(status_code=415, detail="Invalid Content-Type")
 
             offset_header = request.headers.get("upload-offset")
             if offset_header is None:
-                raise HTTPException(status_code=400, detail="Missing Upload-Offset header")
+                raise HTTPException(
+                    status_code=400, detail="Missing Upload-Offset header"
+                )
             client_offset = int(offset_header)
 
             try:
@@ -140,7 +148,9 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             return Response(content=None, status_code=204, headers=response_headers)
 
         @delete("/{upload_id:str}")
-        async def terminate_upload(self, upload_id: str, request: Request, tus_storage: Any) -> Response[None]:
+        async def terminate_upload(
+            self, upload_id: str, request: Request, tus_storage: Any
+        ) -> Response[None]:
             try:
                 upload = await tus_storage.get_upload(upload_id)
             except FileNotFoundError:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from litestar.types import ASGIApp, Receive, Scope, Send
 
 
@@ -42,16 +44,29 @@ class TUSMiddleware:
             return
 
         # Inject Tus-Resumable header into all responses
-        async def send_with_tus_header(message: dict) -> None:  # type: ignore[type-arg]
+        async def send_with_tus_header(message: Any) -> None:
             if message["type"] == "http.response.start":
                 resp_headers = list(message.get("headers", []))
                 resp_headers.append((b"tus-resumable", b"1.0.0"))
                 message = {**message, "headers": resp_headers}
-            await send(message)
+            await send(cast(Any, message))
 
-        await self.app(scope, receive, send_with_tus_header)
+        await self.app(scope, receive, cast(Send, send_with_tus_header))
 
     async def _send_options(self, send: Send) -> None:
+        await send(
+            cast(
+                Any,
+                {
+                    "type": "http.response.start",
+                    "status": 204,
+                    "headers": self._options_headers(),
+                },
+            )
+        )
+        await send(cast(Any, {"type": "http.response.body", "body": b""}))
+
+    def _options_headers(self) -> list[tuple[bytes, bytes]]:
         headers: list[tuple[bytes, bytes]] = [
             (b"tus-resumable", b"1.0.0"),
             (b"tus-version", b"1.0.0"),
@@ -59,35 +74,25 @@ class TUSMiddleware:
         ]
         if self.max_size is not None:
             headers.append((b"tus-max-size", str(self.max_size).encode()))
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 204,
-                "headers": headers,
-            }
-        )
-        await send(
-            {
-                "type": "http.response.body",
-                "body": b"",
-            }
-        )
+        return headers
 
     @staticmethod
     async def _send_412(send: Send) -> None:
         await send(
-            {
-                "type": "http.response.start",
-                "status": 412,
-                "headers": [
-                    (b"tus-version", b"1.0.0"),
-                    (b"content-type", b"text/plain"),
-                ],
-            }
+            cast(
+                Any,
+                {
+                    "type": "http.response.start",
+                    "status": 412,
+                    "headers": [
+                        (b"tus-version", b"1.0.0"),
+                        (b"content-type", b"text/plain"),
+                    ],
+                },
+            )
         )
         await send(
-            {
-                "type": "http.response.body",
-                "body": b"Unsupported TUS version",
-            }
+            cast(
+                Any, {"type": "http.response.body", "body": b"Unsupported TUS version"}
+            )
         )

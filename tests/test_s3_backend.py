@@ -18,8 +18,8 @@ def s3_client(minio_service: Any):
     return boto3.client(
         "s3",
         endpoint_url=f"http://{minio_service.host}:{minio_service.port}",
-        aws_access_key_id="minioadmin",
-        aws_secret_access_key="minioadmin",
+        aws_access_key_id=minio_service.access_key,
+        aws_secret_access_key=minio_service.secret_key,
         region_name="us-east-1",
     )
 
