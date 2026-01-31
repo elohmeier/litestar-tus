@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import base64
+from typing import cast
+
+from litestar.exceptions import ImproperlyConfiguredException
+from litestar import Litestar
 
 from litestar_tus._utils import (
     encode_metadata,
     generate_upload_id,
     parse_metadata_header,
+    safe_emit,
 )
 
 
@@ -54,3 +59,27 @@ class TestEncodeMetadata:
 
     def test_empty(self) -> None:
         assert encode_metadata({}) == ""
+
+
+class TestSafeEmit:
+    def test_no_listeners_is_debug(self, caplog) -> None:
+        class App:
+            def emit(self, *_args, **_kwargs) -> None:
+                raise ImproperlyConfiguredException("no listeners")
+
+        caplog.set_level("DEBUG")
+
+        safe_emit(cast(Litestar, App()), "tus.post_create")
+
+        assert "TUS event handler skipped" in caplog.text
+
+    def test_other_errors_are_logged(self, caplog) -> None:
+        class App:
+            def emit(self, *_args, **_kwargs) -> None:
+                raise RuntimeError("boom")
+
+        caplog.set_level("ERROR")
+
+        safe_emit(cast(Litestar, App()), "tus.post_create")
+
+        assert "TUS event handler failed" in caplog.text

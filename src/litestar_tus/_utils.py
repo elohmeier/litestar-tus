@@ -5,6 +5,8 @@ import logging
 import secrets
 from typing import TYPE_CHECKING, Any
 
+from litestar.exceptions import ImproperlyConfiguredException
+
 from litestar_tus.models import UploadMetadata
 
 if TYPE_CHECKING:
@@ -46,5 +48,7 @@ def encode_metadata(metadata: UploadMetadata) -> str:
 def safe_emit(app: Litestar, event_id: str, **kwargs: Any) -> None:
     try:
         app.emit(event_id, **kwargs)
+    except ImproperlyConfiguredException:
+        logger.debug("TUS event handler skipped (no listeners): %s", event_id)
     except Exception:
         logger.exception("TUS event handler failed: %s", event_id)
