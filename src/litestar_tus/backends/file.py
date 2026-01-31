@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -16,26 +17,50 @@ class FileUpload:
         self._data_path = data_path
         self._info_path = info_path
 
+    @property
+    def _lock_path(self) -> Path:
+        return self._data_path.with_suffix(".lock")
+
     async def _save_info(self) -> None:
         content = json.dumps(self._info.to_dict()).encode("utf-8")
         await anyio.Path(self._info_path).write_bytes(content)
 
+    def _write_chunk_locked(self, offset: int, data: bytes) -> int:
+        lock_fd = open(self._lock_path, "w")  # noqa: SIM115
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            # Re-read authoritative state from disk
+            info = UploadInfo.from_dict(json.loads(self._info_path.read_bytes()))
+
+            if offset != info.offset:
+                msg = f"Offset mismatch: expected {info.offset}, got {offset}"
+                raise ValueError(msg)
+
+            with open(self._data_path, "ab") as f:
+                f.write(data)
+
+            bytes_written = len(data)
+            info.offset += bytes_written
+            if info.size is not None and info.offset >= info.size:
+                info.is_final = True
+
+            self._info_path.write_bytes(json.dumps(info.to_dict()).encode("utf-8"))
+            self._info = info
+            return bytes_written
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
     async def write_chunk(self, offset: int, src: AsyncIterator[bytes]) -> int:
-        if offset != self._info.offset:
-            msg = f"Offset mismatch: expected {self._info.offset}, got {offset}"
-            raise ValueError(msg)
+        chunks: list[bytes] = []
+        async for chunk in src:
+            chunks.append(chunk)
+        data = b"".join(chunks)
 
-        bytes_written = 0
-        async with await anyio.open_file(self._data_path, "ab") as f:
-            async for chunk in src:
-                await f.write(chunk)
-                bytes_written += len(chunk)
-
-        self._info.offset += bytes_written
-        if self._info.size is not None and self._info.offset >= self._info.size:
-            self._info.is_final = True
-        await self._save_info()
-        return bytes_written
+        return await anyio.to_thread.run_sync(
+            lambda: self._write_chunk_locked(offset, data)
+        )
 
     async def get_info(self) -> UploadInfo:
         content = await anyio.Path(self._info_path).read_bytes()
@@ -84,15 +109,25 @@ class FileStorageBackend:
         info = UploadInfo.from_dict(json.loads(content))
         return FileUpload(info, data_path, info_path)
 
-    async def terminate_upload(self, upload_id: str) -> None:
+    def _terminate_locked(self, upload_id: str) -> None:
         data_path = self.upload_dir / upload_id
         info_path = self.upload_dir / f"{upload_id}.info"
+        lock_path = self.upload_dir / f"{upload_id}.lock"
 
-        if not await anyio.Path(info_path).exists():
+        if not info_path.exists():
             raise FileNotFoundError(f"Upload {upload_id} not found")
 
-        for p in (data_path, info_path):
-            try:
-                await anyio.Path(p).unlink()
-            except FileNotFoundError:
-                pass
+        lock_fd = open(lock_path, "w")  # noqa: SIM115
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            for p in (data_path, info_path, lock_path):
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+    async def terminate_upload(self, upload_id: str) -> None:
+        await anyio.to_thread.run_sync(lambda: self._terminate_locked(upload_id))

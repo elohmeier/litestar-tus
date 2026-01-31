@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import anyio
 import pytest
 
 from litestar_tus.backends.file import FileStorageBackend
@@ -114,3 +115,90 @@ class TestFileStorageBackend:
         loaded = await upload.get_info()
         assert loaded.id == "test-8"
         assert loaded.size == 100
+
+
+class TestFileLocking:
+    async def test_two_concurrent_writes_same_offset(
+        self, backend: FileStorageBackend
+    ) -> None:
+        """Two concurrent write_chunk calls at offset 0: exactly one succeeds."""
+        info = UploadInfo(id="lock-1", size=100)
+        await backend.create_upload(info)
+
+        results: list[int | ValueError] = []
+
+        async def attempt_write() -> None:
+            upload = await backend.get_upload("lock-1")
+            try:
+                written = await upload.write_chunk(0, _aiter(b"hello"))
+                results.append(written)
+            except ValueError as exc:
+                results.append(exc)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(attempt_write)
+            tg.start_soon(attempt_write)
+
+        successes = [r for r in results if isinstance(r, int)]
+        failures = [r for r in results if isinstance(r, ValueError)]
+        assert len(successes) == 1
+        assert successes[0] == 5
+        assert len(failures) == 1
+
+    async def test_many_concurrent_writers(self, backend: FileStorageBackend) -> None:
+        """10 concurrent writers at offset 0: exactly one succeeds."""
+        info = UploadInfo(id="lock-2", size=100)
+        await backend.create_upload(info)
+
+        results: list[int | ValueError] = []
+
+        async def attempt_write() -> None:
+            upload = await backend.get_upload("lock-2")
+            try:
+                written = await upload.write_chunk(0, _aiter(b"data"))
+                results.append(written)
+            except ValueError as exc:
+                results.append(exc)
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(10):
+                tg.start_soon(attempt_write)
+
+        successes = [r for r in results if isinstance(r, int)]
+        failures = [r for r in results if isinstance(r, ValueError)]
+        assert len(successes) == 1
+        assert len(failures) == 9
+
+    async def test_sequential_writes_with_locking(
+        self, backend: FileStorageBackend, upload_dir: Path
+    ) -> None:
+        """Sequential writes still work correctly with locking."""
+        info = UploadInfo(id="lock-3", size=10)
+        upload = await backend.create_upload(info)
+
+        await upload.write_chunk(0, _aiter(b"hello"))
+        await upload.write_chunk(5, _aiter(b"world"))
+
+        loaded = await upload.get_info()
+        assert loaded.offset == 10
+        assert loaded.is_final is True
+
+        data = (upload_dir / "lock-3").read_bytes()
+        assert data == b"helloworld"
+
+    async def test_lock_file_cleaned_on_terminate(
+        self, backend: FileStorageBackend, upload_dir: Path
+    ) -> None:
+        """Lock file is cleaned up when upload is terminated."""
+        info = UploadInfo(id="lock-4", size=100)
+        upload = await backend.create_upload(info)
+
+        # Write a chunk to create the lock file
+        await upload.write_chunk(0, _aiter(b"data"))
+        assert (upload_dir / "lock-4.lock").exists()
+
+        await backend.terminate_upload("lock-4")
+
+        assert not (upload_dir / "lock-4").exists()
+        assert not (upload_dir / "lock-4.info").exists()
+        assert not (upload_dir / "lock-4.lock").exists()

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
-
 from litestar import Controller, Request, Response, delete, head, patch, post
 from litestar.exceptions import HTTPException, NotFoundException
 
@@ -15,6 +13,7 @@ from litestar_tus._utils import (
 from litestar_tus.config import TUSConfig
 from litestar_tus.events import TUSEvent
 from litestar_tus.models import UploadInfo
+from litestar_tus.protocols import StorageBackend
 
 
 def _format_http_date(dt: datetime) -> str:
@@ -26,7 +25,9 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
         path = config.path_prefix
 
         @post("/", status_code=201)
-        async def create_upload(self, request: Request, tus_storage: Any) -> Response:
+        async def create_upload(
+            self, request: Request, tus_storage: StorageBackend
+        ) -> Response:
             upload_length_header = request.headers.get("upload-length")
             size: int | None = None
             if upload_length_header is not None:
@@ -63,7 +64,10 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             # creation-with-upload: if request has body, write it
             content_type = request.headers.get("content-type", "")
             if content_type == "application/offset+octet-stream":
-                await upload.write_chunk(0, request.stream())
+                try:
+                    await upload.write_chunk(0, request.stream())
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc))
                 info = await upload.get_info()
                 safe_emit(request.app, TUSEvent.POST_RECEIVE, upload_info=info)
 
@@ -84,7 +88,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
 
         @head("/{upload_id:str}")
         async def get_upload_info(
-            self, upload_id: str, tus_storage: Any
+            self, upload_id: str, tus_storage: StorageBackend
         ) -> Response[None]:
             try:
                 upload = await tus_storage.get_upload(upload_id)
@@ -107,7 +111,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
 
         @patch("/{upload_id:str}", status_code=204)
         async def write_chunk(
-            self, upload_id: str, request: Request, tus_storage: Any
+            self, upload_id: str, request: Request, tus_storage: StorageBackend
         ) -> Response[None]:
             content_type = request.headers.get("content-type", "")
             if content_type != "application/offset+octet-stream":
@@ -129,7 +133,10 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             if client_offset != info.offset:
                 raise HTTPException(status_code=409, detail="Offset mismatch")
 
-            await upload.write_chunk(client_offset, request.stream())
+            try:
+                await upload.write_chunk(client_offset, request.stream())
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
             info = await upload.get_info()
 
             safe_emit(request.app, TUSEvent.POST_RECEIVE, upload_info=info)
@@ -149,7 +156,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
 
         @delete("/{upload_id:str}")
         async def terminate_upload(
-            self, upload_id: str, request: Request, tus_storage: Any
+            self, upload_id: str, request: Request, tus_storage: StorageBackend
         ) -> Response[None]:
             try:
                 upload = await tus_storage.get_upload(upload_id)

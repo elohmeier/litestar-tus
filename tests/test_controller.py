@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 
+import anyio
+
 
 class TestServerInfo:
     async def test_options_returns_capabilities(self, tus_client) -> None:
@@ -298,3 +300,33 @@ class TestDeleteUpload:
             headers={"Tus-Resumable": "1.0.0"},
         )
         assert resp.status_code == 404
+
+
+class TestConcurrentPatch:
+    async def test_concurrent_patches_one_wins(self, tus_client) -> None:
+        """Two concurrent PATCH requests: one gets 204, the other gets 409."""
+        create_resp = await tus_client.post(
+            "/files/",
+            headers={"Tus-Resumable": "1.0.0", "Upload-Length": "100"},
+        )
+        location = create_resp.headers["location"]
+
+        status_codes: list[int] = []
+
+        async def send_patch() -> None:
+            resp = await tus_client.patch(
+                location,
+                headers={
+                    "Tus-Resumable": "1.0.0",
+                    "Upload-Offset": "0",
+                    "Content-Type": "application/offset+octet-stream",
+                },
+                content=b"hello",
+            )
+            status_codes.append(resp.status_code)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(send_patch)
+            tg.start_soon(send_patch)
+
+        assert sorted(status_codes) == [204, 409]
