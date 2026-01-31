@@ -1,5 +1,9 @@
 # litestar-tus
 
+[![CI](https://github.com/elohmeier/litestar-tus/actions/workflows/ci.yaml/badge.svg)](https://github.com/elohmeier/litestar-tus/actions/workflows/ci.yaml)
+[![Publish to PyPI](https://github.com/elohmeier/litestar-tus/actions/workflows/pypi.yaml/badge.svg)](https://github.com/elohmeier/litestar-tus/actions/workflows/pypi.yaml)
+[![PyPI version](https://img.shields.io/pypi/v/litestar-tus)](https://pypi.org/project/litestar-tus/)
+
 [TUS v1.0.0](https://tus.io/protocols/resumable-upload) resumable upload protocol plugin for [Litestar](https://litestar.dev) with pluggable storage backends.
 
 ## Installation
