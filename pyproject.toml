@@ -1,6 +1,6 @@
 [project]
 name = "litestar-tus"
-version = "0.1.0"
+version = "1.0.0"
 description = "TUS resumable upload protocol plugin for Litestar"
 readme = "README.md"
 authors = [{ name = "Enno Richter", email = "enno@nerdworks.de" }]
