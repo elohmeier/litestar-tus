@@ -24,38 +24,54 @@ def _format_http_date(dt: datetime) -> str:
     return dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
 
-async def _read_stream(stream: AsyncIterator[bytes]) -> bytes:
-    chunks: list[bytes] = []
-    async for chunk in stream:
-        chunks.append(chunk)
-    return b"".join(chunks)
+class ChecksumAwareStream:
+    """Async iterator wrapper that validates checksum as data streams through."""
 
+    def __init__(
+        self,
+        source: AsyncIterator[bytes],
+        checksum_header: str | None = None,
+    ) -> None:
+        self._source = source
+        self._hasher: hashlib._Hash | None = None
+        self._expected_digest: bytes | None = None
 
-async def _bytes_to_stream(data: bytes) -> AsyncIterator[bytes]:
-    yield data
+        if checksum_header is not None:
+            self._parse_header(checksum_header)
 
+    def _parse_header(self, header_value: str) -> None:
+        parts = header_value.split(" ", 1)
+        if len(parts) != 2:
+            raise HTTPException(
+                status_code=400, detail="Malformed Upload-Checksum header"
+            )
+        algo, b64digest = parts
+        if algo not in SUPPORTED_CHECKSUM_ALGORITHMS:
+            raise HTTPException(
+                status_code=400, detail=f"Unsupported checksum algorithm: {algo}"
+            )
+        try:
+            self._expected_digest = base64.b64decode(b64digest, validate=True)
+        except Exception:
+            raise HTTPException(
+                status_code=400, detail="Invalid base64 in Upload-Checksum header"
+            )
+        self._hasher = hashlib.new(algo)
 
-def _validate_checksum(header_value: str, data: bytes) -> None:
-    parts = header_value.split(" ", 1)
-    if len(parts) != 2:
-        raise HTTPException(status_code=400, detail="Malformed Upload-Checksum header")
-    algo, b64digest = parts
+    def __aiter__(self) -> ChecksumAwareStream:
+        return self
 
-    if algo not in SUPPORTED_CHECKSUM_ALGORITHMS:
-        raise HTTPException(
-            status_code=400, detail=f"Unsupported checksum algorithm: {algo}"
-        )
-
-    try:
-        expected = base64.b64decode(b64digest, validate=True)
-    except Exception:
-        raise HTTPException(
-            status_code=400, detail="Invalid base64 in Upload-Checksum header"
-        )
-
-    actual = hashlib.new(algo, data).digest()
-    if actual != expected:
-        raise HTTPException(status_code=460, detail="Checksum mismatch")
+    async def __anext__(self) -> bytes:
+        try:
+            chunk = await self._source.__anext__()
+        except StopAsyncIteration:
+            if self._hasher is not None and self._expected_digest is not None:
+                if self._hasher.digest() != self._expected_digest:
+                    raise HTTPException(status_code=460, detail="Checksum mismatch")
+            raise
+        if self._hasher is not None:
+            self._hasher.update(chunk)
+        return chunk
 
 
 def _check_expired(info: UploadInfo) -> None:
@@ -107,8 +123,6 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             # creation-with-upload: if request has body, write it
             content_type = request.headers.get("content-type", "")
             if content_type == "application/offset+octet-stream":
-                body = await _read_stream(request.stream())
-
                 content_length_header = request.headers.get("content-length")
                 if content_length_header is not None and size is not None:
                     if int(content_length_header) > size:
@@ -118,11 +132,10 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                         )
 
                 checksum_header = request.headers.get("upload-checksum")
-                if checksum_header is not None:
-                    _validate_checksum(checksum_header, body)
+                stream = ChecksumAwareStream(request.stream(), checksum_header)
 
                 try:
-                    await upload.write_chunk(0, _bytes_to_stream(body))
+                    await upload.write_chunk(0, stream)
                 except ValueError as exc:
                     raise HTTPException(status_code=409, detail=str(exc))
                 info = await upload.get_info()
@@ -200,14 +213,11 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                         detail="Body exceeds declared upload size",
                     )
 
-            body = await _read_stream(request.stream())
-
             checksum_header = request.headers.get("upload-checksum")
-            if checksum_header is not None:
-                _validate_checksum(checksum_header, body)
+            stream = ChecksumAwareStream(request.stream(), checksum_header)
 
             try:
-                await upload.write_chunk(client_offset, _bytes_to_stream(body))
+                await upload.write_chunk(client_offset, stream)
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc))
             info = await upload.get_info()
