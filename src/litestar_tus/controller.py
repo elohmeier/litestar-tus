@@ -54,10 +54,10 @@ class ChecksumAwareStream:
             )
         try:
             self._expected_digest = base64.b64decode(b64digest, validate=True)
-        except Exception:
+        except Exception as exc:
             raise HTTPException(
                 status_code=400, detail="Invalid base64 in Upload-Checksum header"
-            )
+            ) from exc
         self._hasher = hashlib.new(algo)
 
     def __aiter__(self) -> ChecksumAwareStream:
@@ -67,9 +67,14 @@ class ChecksumAwareStream:
         try:
             chunk = await self._source.__anext__()
         except StopAsyncIteration:
-            if self._hasher is not None and self._expected_digest is not None:
-                if self._hasher.digest() != self._expected_digest:
-                    raise HTTPException(status_code=460, detail="Checksum mismatch")
+            if (
+                self._hasher is not None
+                and self._expected_digest is not None
+                and self._hasher.digest() != self._expected_digest
+            ):
+                raise HTTPException(
+                    status_code=460, detail="Checksum mismatch"
+                ) from None
             raise
         if self._hasher is not None:
             self._hasher.update(chunk)
@@ -132,12 +137,15 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             content_type = request.headers.get("content-type", "")
             if content_type == "application/offset+octet-stream":
                 content_length_header = request.headers.get("content-length")
-                if content_length_header is not None and size is not None:
-                    if int(content_length_header) > size:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Body exceeds declared upload size",
-                        )
+                if (
+                    content_length_header is not None
+                    and size is not None
+                    and int(content_length_header) > size
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Body exceeds declared upload size",
+                    )
 
                 checksum_header = request.headers.get("upload-checksum")
                 stream = ChecksumAwareStream(request.stream(), checksum_header)
@@ -145,7 +153,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                 try:
                     await upload.write_chunk(0, stream)
                 except ValueError as exc:
-                    raise HTTPException(status_code=409, detail=str(exc))
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
                 info = await upload.get_info()
                 safe_emit(request.app, TUSEvent.POST_RECEIVE, upload_info=info)
 
@@ -154,7 +162,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                     try:
                         await upload.finish()
                     except ValueError as exc:
-                        raise HTTPException(status_code=409, detail=str(exc))
+                        raise HTTPException(status_code=409, detail=str(exc)) from exc
                     safe_emit(request.app, TUSEvent.POST_FINISH, upload_info=info)
 
             location = f"{config.path_prefix}/{upload_id}"
@@ -173,8 +181,8 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
         ) -> Response[None]:
             try:
                 upload = await tus_storage.get_upload(upload_id)
-            except FileNotFoundError:
-                raise NotFoundException(detail="Upload not found")
+            except FileNotFoundError as exc:
+                raise NotFoundException(detail="Upload not found") from exc
 
             info = await upload.get_info()
             _check_expired(info)
@@ -208,8 +216,8 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
 
             try:
                 upload = await tus_storage.get_upload(upload_id)
-            except FileNotFoundError:
-                raise NotFoundException(detail="Upload not found")
+            except FileNotFoundError as exc:
+                raise NotFoundException(detail="Upload not found") from exc
 
             info = await upload.get_info()
             _check_expired(info)
@@ -217,12 +225,15 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                 raise HTTPException(status_code=409, detail="Offset mismatch")
 
             content_length_header = request.headers.get("content-length")
-            if content_length_header is not None and info.size is not None:
-                if client_offset + int(content_length_header) > info.size:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Body exceeds declared upload size",
-                    )
+            if (
+                content_length_header is not None
+                and info.size is not None
+                and client_offset + int(content_length_header) > info.size
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Body exceeds declared upload size",
+                )
 
             checksum_header = request.headers.get("upload-checksum")
             stream = ChecksumAwareStream(request.stream(), checksum_header)
@@ -230,7 +241,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             try:
                 await upload.write_chunk(client_offset, stream)
             except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc))
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             info = await upload.get_info()
 
             safe_emit(request.app, TUSEvent.POST_RECEIVE, upload_info=info)
@@ -240,7 +251,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                 try:
                     await upload.finish()
                 except ValueError as exc:
-                    raise HTTPException(status_code=409, detail=str(exc))
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
                 safe_emit(request.app, TUSEvent.POST_FINISH, upload_info=info)
 
             response_headers: dict[str, str] = {
@@ -257,8 +268,8 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
         ) -> Response[None]:
             try:
                 upload = await tus_storage.get_upload(upload_id)
-            except FileNotFoundError:
-                raise NotFoundException(detail="Upload not found")
+            except FileNotFoundError as exc:
+                raise NotFoundException(detail="Upload not found") from exc
 
             info = await upload.get_info()
             _check_expired(info)

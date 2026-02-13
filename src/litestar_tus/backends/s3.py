@@ -294,14 +294,14 @@ class S3StorageBackend:
             try:
                 resp = self._client.get_object(Bucket=self._bucket, Key=info_key)
                 return resp["Body"].read(), resp["ETag"]
-            except self._client.exceptions.NoSuchKey:
+            except self._client.exceptions.NoSuchKey as exc:
                 msg = f"Upload {upload_id} not found"
-                raise FileNotFoundError(msg)
+                raise FileNotFoundError(msg) from exc
             except ClientError as exc:
                 code = exc.response.get("Error", {}).get("Code")
                 if code in {"NoSuchKey", "404", "NotFound"}:
                     msg = f"Upload {upload_id} not found"
-                    raise FileNotFoundError(msg)
+                    raise FileNotFoundError(msg) from exc
                 raise
 
         content, etag = await anyio.to_thread.run_sync(_get)
@@ -327,14 +327,14 @@ class S3StorageBackend:
                 try:
                     resp = self._client.get_object(Bucket=self._bucket, Key=info_key)
                     return json.loads(resp["Body"].read())
-                except self._client.exceptions.NoSuchKey:
+                except self._client.exceptions.NoSuchKey as exc:
                     msg = f"Upload {upload_id} not found"
-                    raise FileNotFoundError(msg)
+                    raise FileNotFoundError(msg) from exc
                 except ClientError as exc:
                     code = exc.response.get("Error", {}).get("Code")
                     if code in {"NoSuchKey", "404", "NotFound"}:
                         msg = f"Upload {upload_id} not found"
-                        raise FileNotFoundError(msg)
+                        raise FileNotFoundError(msg) from exc
                     raise
 
             info_data = await anyio.to_thread.run_sync(_get_info)
