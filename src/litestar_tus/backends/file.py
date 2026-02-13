@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -23,12 +24,29 @@ class FileUpload:
     def _lock_path(self) -> Path:
         return self._data_path.with_suffix(".lock")
 
+    @staticmethod
+    def _write_info_atomic(info_path: Path, content: bytes) -> None:
+        tmp_path = info_path.with_suffix(f"{info_path.suffix}.tmp")
+        tmp_path.write_bytes(content)
+        os.replace(tmp_path, info_path)
+
+    def _read_info_locked(self) -> UploadInfo:
+        lock_fd = open(self._lock_path, "a+")  # noqa: SIM115
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_SH)
+            return UploadInfo.from_dict(json.loads(self._info_path.read_bytes()))
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
     async def _save_info(self) -> None:
         content = json.dumps(self._info.to_dict()).encode("utf-8")
-        await anyio.Path(self._info_path).write_bytes(content)
+        await anyio.to_thread.run_sync(
+            lambda: self._write_info_atomic(self._info_path, content)
+        )
 
     def _write_chunk_locked(self, offset: int, data: bytes) -> int:
-        lock_fd = open(self._lock_path, "w")  # noqa: SIM115
+        lock_fd = open(self._lock_path, "a+")  # noqa: SIM115
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
@@ -47,7 +65,9 @@ class FileUpload:
             if info.size is not None and info.offset >= info.size:
                 info.is_final = True
 
-            self._info_path.write_bytes(json.dumps(info.to_dict()).encode("utf-8"))
+            self._write_info_atomic(
+                self._info_path, json.dumps(info.to_dict()).encode("utf-8")
+            )
             self._info = info
             return bytes_written
         finally:
@@ -61,7 +81,7 @@ class FileUpload:
             except StopAsyncIteration:
                 return None
 
-        lock_fd = open(self._lock_path, "w")  # noqa: SIM115
+        lock_fd = open(self._lock_path, "a+")  # noqa: SIM115
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
@@ -90,7 +110,9 @@ class FileUpload:
             if info.size is not None and info.offset >= info.size:
                 info.is_final = True
 
-            self._info_path.write_bytes(json.dumps(info.to_dict()).encode("utf-8"))
+            self._write_info_atomic(
+                self._info_path, json.dumps(info.to_dict()).encode("utf-8")
+            )
             self._info = info
             return bytes_written
         finally:
@@ -103,8 +125,7 @@ class FileUpload:
         )
 
     async def get_info(self) -> UploadInfo:
-        content = await anyio.Path(self._info_path).read_bytes()
-        self._info = UploadInfo.from_dict(json.loads(content))
+        self._info = await anyio.to_thread.run_sync(self._read_info_locked)
         return self._info
 
     async def finish(self) -> None:
@@ -131,23 +152,36 @@ class FileStorageBackend:
         await self._ensure_dir()
         data_path = self.upload_dir / info.id
         info_path = self.upload_dir / f"{info.id}.info"
+        lock_path = self.upload_dir / f"{info.id}.lock"
 
         await anyio.Path(data_path).write_bytes(b"")
+        await anyio.Path(lock_path).write_bytes(b"")
         content = json.dumps(info.to_dict()).encode("utf-8")
-        await anyio.Path(info_path).write_bytes(content)
+        await anyio.to_thread.run_sync(
+            lambda: FileUpload._write_info_atomic(info_path, content)
+        )
 
         return FileUpload(info, data_path, info_path)
 
     async def get_upload(self, upload_id: str) -> FileUpload:
         data_path = self.upload_dir / upload_id
         info_path = self.upload_dir / f"{upload_id}.info"
+        lock_path = self.upload_dir / f"{upload_id}.lock"
 
         if not await anyio.Path(info_path).exists():
             msg = f"Upload {upload_id} not found"
             raise FileNotFoundError(msg)
 
-        content = await anyio.Path(info_path).read_bytes()
-        info = UploadInfo.from_dict(json.loads(content))
+        def _read_info_locked() -> UploadInfo:
+            lock_fd = open(lock_path, "a+")  # noqa: SIM115
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_SH)
+                return UploadInfo.from_dict(json.loads(info_path.read_bytes()))
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+
+        info = await anyio.to_thread.run_sync(_read_info_locked)
         return FileUpload(info, data_path, info_path)
 
     def _terminate_locked(self, upload_id: str) -> None:
@@ -159,7 +193,7 @@ class FileStorageBackend:
             msg = f"Upload {upload_id} not found"
             raise FileNotFoundError(msg)
 
-        lock_fd = open(lock_path, "w")  # noqa: SIM115
+        lock_fd = open(lock_path, "a+")  # noqa: SIM115
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             for p in (data_path, info_path, lock_path):
