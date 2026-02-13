@@ -15,6 +15,20 @@ from litestar_tus.models import UploadInfo
 S3Client = Any
 
 
+def _normalize_etag(etag: str | None) -> str | None:
+    """Normalize S3 ETag values for conditional headers.
+
+    Some S3-compatible providers return ETag values quoted, while conditional
+    request headers such as ``If-Match`` may require the raw (unquoted) token.
+    """
+    if etag is None:
+        return None
+    normalized = etag.strip()
+    if normalized.startswith("W/"):
+        normalized = normalized[2:].strip()
+    return normalized.strip('"')
+
+
 class S3Upload:
     def __init__(
         self,
@@ -33,7 +47,7 @@ class S3Upload:
         self._key_prefix = key_prefix
         self._lock = lock
         self._part_size = part_size
-        self._info_etag = info_etag
+        self._info_etag = _normalize_etag(info_etag)
 
     @property
     def _data_key(self) -> str:
@@ -68,7 +82,7 @@ class S3Upload:
                     msg = f"Concurrent modification detected on upload {self._info.id}"
                     raise ValueError(msg) from exc
                 raise
-            return resp["ETag"]
+            return _normalize_etag(resp["ETag"]) or ""
 
         self._info_etag = await anyio.to_thread.run_sync(_put)
 
@@ -173,7 +187,7 @@ class S3Upload:
 
         content, etag = await anyio.to_thread.run_sync(_get)
         self._info = UploadInfo.from_dict(json.loads(content))
-        self._info_etag = etag
+        self._info_etag = _normalize_etag(etag)
         return self._info
 
     async def finish(self) -> None:
@@ -299,7 +313,7 @@ class S3StorageBackend:
             key_prefix=self._key_prefix,
             lock=self._get_lock(upload_id),
             part_size=self._part_size,
-            info_etag=etag,
+            info_etag=_normalize_etag(etag),
         )
 
     async def terminate_upload(self, upload_id: str) -> None:
