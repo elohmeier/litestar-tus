@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import anyio
@@ -343,9 +343,7 @@ def _upload_id_from_location(location: str) -> str:
 def _expire_upload(upload_dir: Path, upload_id: str) -> None:
     info_path = upload_dir / f"{upload_id}.info"
     info = json.loads(info_path.read_bytes())
-    info["expires_at"] = (
-        datetime.now(tz=timezone.utc) - timedelta(hours=1)
-    ).isoformat()
+    info["expires_at"] = (datetime.now(tz=UTC) - timedelta(hours=1)).isoformat()
     info_path.write_bytes(json.dumps(info).encode())
 
 

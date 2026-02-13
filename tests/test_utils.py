@@ -3,9 +3,8 @@ from __future__ import annotations
 import base64
 from typing import cast
 
-from litestar.exceptions import ImproperlyConfiguredException
 from litestar import Litestar
-
+from litestar.exceptions import ImproperlyConfiguredException
 from litestar_tus._utils import (
     encode_metadata,
     generate_upload_id,

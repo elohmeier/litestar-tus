@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import anyio
@@ -21,7 +22,7 @@ async def _aiter_chunks(data: bytes, chunk_size: int = 1024 * 1024):
         yield data[i : i + chunk_size]
 
 
-@pytest.fixture()
+@pytest.fixture
 def s3_client(minio_service: Any):
     import boto3
 
@@ -34,24 +35,22 @@ def s3_client(minio_service: Any):
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def s3_bucket(s3_client: Any) -> str:
     bucket_name = "test-tus-uploads"
-    try:
+    with contextlib.suppress(s3_client.exceptions.BucketAlreadyOwnedByYou):
         s3_client.create_bucket(Bucket=bucket_name)
-    except s3_client.exceptions.BucketAlreadyOwnedByYou:
-        pass
     return bucket_name
 
 
-@pytest.fixture()
+@pytest.fixture
 def s3_backend(s3_client: Any, s3_bucket: str):
     from litestar_tus.backends.s3 import S3StorageBackend
 
     return S3StorageBackend(client=s3_client, bucket=s3_bucket, key_prefix="uploads/")
 
 
-@pytest.fixture()
+@pytest.fixture
 def s3_backend_5mib(s3_client: Any, s3_bucket: str):
     from litestar_tus.backends.s3 import S3StorageBackend
 
@@ -131,9 +130,8 @@ class TestS3StorageBackend:
             },
         )
 
-        with stubber:
-            with pytest.raises(FileNotFoundError):
-                await s3_backend.get_upload("nonexistent")
+        with stubber, pytest.raises(FileNotFoundError):
+            await s3_backend.get_upload("nonexistent")
 
     async def test_offset_mismatch(self, s3_backend: Any) -> None:
         from litestar_tus.models import UploadInfo

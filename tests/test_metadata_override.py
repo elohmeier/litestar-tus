@@ -4,7 +4,6 @@ from pathlib import Path
 
 from litestar import Litestar, Request
 from litestar.testing import AsyncTestClient
-
 from litestar_tus import TUSConfig, TUSPlugin
 from litestar_tus._utils import parse_metadata_header
 

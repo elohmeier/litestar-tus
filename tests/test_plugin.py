@@ -4,7 +4,6 @@ from pathlib import Path
 
 from litestar import Litestar
 from litestar.testing import AsyncTestClient
-
 from litestar_tus import TUSConfig, TUSEvent, TUSPlugin, UploadInfo
 from litestar_tus.backends.file import FileStorageBackend
 

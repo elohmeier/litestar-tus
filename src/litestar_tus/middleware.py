@@ -51,14 +51,14 @@ class TUSMiddleware:
                 resp_headers = list(message.get("headers", []))
                 resp_headers.append((b"tus-resumable", b"1.0.0"))
                 message = {**message, "headers": resp_headers}
-            await send(cast(Any, message))
+            await send(cast("Any", message))
 
-        await self.app(scope, receive, cast(Send, send_with_tus_header))
+        await self.app(scope, receive, cast("Send", send_with_tus_header))
 
     async def _send_options(self, send: Send) -> None:
         await send(
             cast(
-                Any,
+                "Any",
                 {
                     "type": "http.response.start",
                     "status": 204,
@@ -66,7 +66,7 @@ class TUSMiddleware:
                 },
             )
         )
-        await send(cast(Any, {"type": "http.response.body", "body": b""}))
+        await send(cast("Any", {"type": "http.response.body", "body": b""}))
 
     def _options_headers(self) -> list[tuple[bytes, bytes]]:
         headers: list[tuple[bytes, bytes]] = [
@@ -89,7 +89,7 @@ class TUSMiddleware:
     async def _send_412(send: Send) -> None:
         await send(
             cast(
-                Any,
+                "Any",
                 {
                     "type": "http.response.start",
                     "status": 412,
@@ -102,6 +102,7 @@ class TUSMiddleware:
         )
         await send(
             cast(
-                Any, {"type": "http.response.body", "body": b"Unsupported TUS version"}
+                "Any",
+                {"type": "http.response.body", "body": b"Unsupported TUS version"},
             )
         )

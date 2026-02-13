@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -64,9 +65,8 @@ class S3Upload:
             except ClientError as exc:
                 code = exc.response.get("Error", {}).get("Code", "")
                 if code in {"PreconditionFailed", "412"}:
-                    raise ValueError(
-                        f"Concurrent modification detected on upload {self._info.id}"
-                    ) from exc
+                    msg = f"Concurrent modification detected on upload {self._info.id}"
+                    raise ValueError(msg) from exc
                 raise
             return resp["ETag"]
 
@@ -113,10 +113,8 @@ class S3Upload:
 
     async def _delete_pending(self) -> None:
         def _del() -> None:
-            try:
+            with contextlib.suppress(Exception):
                 self._client.delete_object(Bucket=self._bucket, Key=self._pending_key)
-            except Exception:
-                pass
 
         await anyio.to_thread.run_sync(_del)
 
@@ -283,11 +281,13 @@ class S3StorageBackend:
                 resp = self._client.get_object(Bucket=self._bucket, Key=info_key)
                 return resp["Body"].read(), resp["ETag"]
             except self._client.exceptions.NoSuchKey:
-                raise FileNotFoundError(f"Upload {upload_id} not found")
+                msg = f"Upload {upload_id} not found"
+                raise FileNotFoundError(msg)
             except ClientError as exc:
                 code = exc.response.get("Error", {}).get("Code")
                 if code in {"NoSuchKey", "404", "NotFound"}:
-                    raise FileNotFoundError(f"Upload {upload_id} not found")
+                    msg = f"Upload {upload_id} not found"
+                    raise FileNotFoundError(msg)
                 raise
 
         content, etag = await anyio.to_thread.run_sync(_get)
@@ -314,11 +314,13 @@ class S3StorageBackend:
                     resp = self._client.get_object(Bucket=self._bucket, Key=info_key)
                     return json.loads(resp["Body"].read())
                 except self._client.exceptions.NoSuchKey:
-                    raise FileNotFoundError(f"Upload {upload_id} not found")
+                    msg = f"Upload {upload_id} not found"
+                    raise FileNotFoundError(msg)
                 except ClientError as exc:
                     code = exc.response.get("Error", {}).get("Code")
                     if code in {"NoSuchKey", "404", "NotFound"}:
-                        raise FileNotFoundError(f"Upload {upload_id} not found")
+                        msg = f"Upload {upload_id} not found"
+                        raise FileNotFoundError(msg)
                     raise
 
             info_data = await anyio.to_thread.run_sync(_get_info)
@@ -329,14 +331,12 @@ class S3StorageBackend:
             if mp_upload_id and not info.is_final:
 
                 def _abort() -> None:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._client.abort_multipart_upload(
                             Bucket=self._bucket,
                             Key=data_key,
                             UploadId=str(mp_upload_id),
                         )
-                    except Exception:
-                        pass
 
                 await anyio.to_thread.run_sync(_abort)
 
@@ -344,20 +344,16 @@ class S3StorageBackend:
 
             def _delete_info_and_pending() -> None:
                 for key in (info_key, pending_key):
-                    try:
+                    with contextlib.suppress(Exception):
                         self._client.delete_object(Bucket=self._bucket, Key=key)
-                    except Exception:
-                        pass
 
             await anyio.to_thread.run_sync(_delete_info_and_pending)
 
             if info.is_final:
 
                 def _delete_data() -> None:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._client.delete_object(Bucket=self._bucket, Key=data_key)
-                    except Exception:
-                        pass
 
                 await anyio.to_thread.run_sync(_delete_data)
 

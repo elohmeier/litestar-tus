@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from litestar import Request
-    from litestar_tus.protocols import StorageBackend
+
     from litestar_tus.models import UploadMetadata
+    from litestar_tus.protocols import StorageBackend
 
 SUPPORTED_CHECKSUM_ALGORITHMS: tuple[str, ...] = ("sha1", "sha256", "md5")
 
@@ -28,8 +29,6 @@ class TUSConfig:
     )
     expiration_seconds: int | None = 86400
     metadata_override: (
-        Callable[
-            ["Request", "UploadMetadata"], "UploadMetadata | Awaitable[UploadMetadata]"
-        ]
+        Callable[[Request, UploadMetadata], UploadMetadata | Awaitable[UploadMetadata]]
         | None
     ) = None

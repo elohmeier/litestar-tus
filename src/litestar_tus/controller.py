@@ -3,9 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import inspect
-from typing import cast
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from litestar import Controller, Request, Response, delete, head, patch, post
 from litestar.exceptions import HTTPException, NotFoundException
@@ -77,7 +77,7 @@ class ChecksumAwareStream:
 
 
 def _check_expired(info: UploadInfo) -> None:
-    if info.expires_at is not None and datetime.now(tz=timezone.utc) >= info.expires_at:
+    if info.expires_at is not None and datetime.now(tz=UTC) >= info.expires_at:
         raise HTTPException(status_code=410, detail="Upload has expired")
 
 
@@ -103,11 +103,11 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             if config.metadata_override is not None:
                 override_result = config.metadata_override(request, metadata)
                 if inspect.isawaitable(override_result):
-                    metadata = cast(UploadMetadata, await override_result)
+                    metadata = cast("UploadMetadata", await override_result)
                 else:
-                    metadata = cast(UploadMetadata, override_result)
+                    metadata = cast("UploadMetadata", override_result)
 
-            now = datetime.now(tz=timezone.utc)
+            now = datetime.now(tz=UTC)
             expires_at: datetime | None = None
             if config.expiration_seconds is not None:
                 expires_at = now + timedelta(seconds=config.expiration_seconds)

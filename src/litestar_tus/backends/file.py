@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 from collections.abc import AsyncIterator
@@ -142,7 +143,8 @@ class FileStorageBackend:
         info_path = self.upload_dir / f"{upload_id}.info"
 
         if not await anyio.Path(info_path).exists():
-            raise FileNotFoundError(f"Upload {upload_id} not found")
+            msg = f"Upload {upload_id} not found"
+            raise FileNotFoundError(msg)
 
         content = await anyio.Path(info_path).read_bytes()
         info = UploadInfo.from_dict(json.loads(content))
@@ -154,16 +156,15 @@ class FileStorageBackend:
         lock_path = self.upload_dir / f"{upload_id}.lock"
 
         if not info_path.exists():
-            raise FileNotFoundError(f"Upload {upload_id} not found")
+            msg = f"Upload {upload_id} not found"
+            raise FileNotFoundError(msg)
 
         lock_fd = open(lock_path, "w")  # noqa: SIM115
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             for p in (data_path, info_path, lock_path):
-                try:
+                with contextlib.suppress(FileNotFoundError):
                     p.unlink()
-                except FileNotFoundError:
-                    pass
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()

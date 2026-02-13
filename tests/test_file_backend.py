@@ -4,7 +4,6 @@ from pathlib import Path
 
 import anyio
 import pytest
-
 from litestar_tus.backends.file import FileStorageBackend
 from litestar_tus.models import UploadInfo
 
@@ -13,7 +12,7 @@ async def _aiter(data: bytes):
     yield data
 
 
-@pytest.fixture()
+@pytest.fixture
 def backend(upload_dir: Path) -> FileStorageBackend:
     return FileStorageBackend(upload_dir)
 
