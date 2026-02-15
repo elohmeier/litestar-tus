@@ -31,7 +31,7 @@ This registers TUS protocol endpoints at `/uploads/` supporting resumable file u
 ## Features
 
 - **TUS v1.0.0** protocol compliance
-- **Extensions**: creation, creation-with-upload, termination, expiration, checksum
+- **Extensions**: creation, creation-with-upload, termination, expiration, checksum, concatenation
 - **Storage backends**: local filesystem (default) and S3 (via boto3)
 - **Concurrency safety**: POSIX file locks (file backend) and S3 conditional writes via ETags (S3 backend)
 - **Checksum verification**: streaming SHA-1, SHA-256, and MD5 validation
@@ -52,6 +52,7 @@ TUSConfig(
         "termination",
         "expiration",
         "checksum",
+        "concatenation",
     ),
     storage_backend=None,         # Custom StorageBackend instance (default: FileStorageBackend)
     metadata_override=None,       # Optional hook to override Upload-Metadata based on the Request
@@ -139,6 +140,21 @@ Upload-Checksum: sha256 <base64-encoded-digest>
 Supported algorithms: `sha1`, `sha256`, `md5`.
 
 The digest is computed incrementally as data streams through — no extra buffering pass required. A mismatch returns HTTP 460 per the TUS protocol specification.
+
+## Concatenation
+
+The `concatenation` extension (enabled by default) allows clients to upload file parts in parallel and then combine them into a single final upload. This is used by `tus-js-client`'s `parallelUploads` option.
+
+**Protocol flow:**
+
+1. Client creates N partial uploads with `Upload-Concat: partial`
+2. Client uploads data to each partial via PATCH (can be done in parallel)
+3. Client creates a final upload with `Upload-Concat: final;/uploads/id1 /uploads/id2 ...`
+4. Server concatenates all partial data in order; the final upload is immediately complete
+
+Partial uploads support creation-with-upload (sending data in the POST body). Final uploads cannot be modified via PATCH after creation.
+
+The S3 backend uses `upload_part_copy` to concatenate partials server-side without downloading and re-uploading data, running all copy operations in parallel. Partials smaller than 5 MiB (S3's minimum part size for copy operations) fall back to download and re-upload automatically.
 
 ## Expiration
 

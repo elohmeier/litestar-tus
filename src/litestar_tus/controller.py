@@ -13,6 +13,7 @@ from litestar.exceptions import HTTPException, NotFoundException
 from litestar_tus._utils import (
     encode_metadata,
     generate_upload_id,
+    parse_concat_header,
     parse_metadata_header,
     safe_emit,
 )
@@ -94,6 +95,93 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
         async def create_upload(
             self, request: Request, tus_storage: StorageBackend
         ) -> Response:
+            concat_header = request.headers.get("upload-concat")
+            concat_type: str | None = None
+            concat_partial_ids: list[str] = []
+
+            if concat_header is not None and "concatenation" in config.extensions:
+                concat_type, concat_partial_ids = parse_concat_header(
+                    concat_header, config.path_prefix
+                )
+
+            # Handle final concatenation upload
+            if concat_type == "final":
+                content_type = request.headers.get("content-type", "")
+                if content_type == "application/offset+octet-stream":
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Cannot include body in final upload creation",
+                    )
+
+                # Validate all partials exist and are complete
+                total_size = 0
+                for partial_id in concat_partial_ids:
+                    try:
+                        partial_upload = await tus_storage.get_upload(partial_id)
+                    except FileNotFoundError as exc:
+                        raise NotFoundException(detail="Upload not found") from exc
+                    partial_info = await partial_upload.get_info()
+                    if (
+                        partial_info.size is None
+                        or partial_info.offset != partial_info.size
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Partial upload not complete",
+                        )
+                    total_size += partial_info.size
+
+                if config.max_size is not None and total_size > config.max_size:
+                    raise HTTPException(
+                        status_code=413, detail="Upload exceeds maximum size"
+                    )
+
+                metadata_header = request.headers.get("upload-metadata", "")
+                metadata = parse_metadata_header(metadata_header)
+                if config.metadata_override is not None:
+                    override_result = config.metadata_override(request, metadata)
+                    if inspect.isawaitable(override_result):
+                        metadata = cast("UploadMetadata", await override_result)
+                    else:
+                        metadata = cast("UploadMetadata", override_result)
+
+                now = datetime.now(tz=UTC)
+                expires_at: datetime | None = None
+                if config.expiration_seconds is not None:
+                    expires_at = now + timedelta(seconds=config.expiration_seconds)
+
+                upload_id = generate_upload_id()
+                info = UploadInfo(
+                    id=upload_id,
+                    size=total_size,
+                    offset=total_size,
+                    is_final=True,
+                    concat_type="final",
+                    concat_parts=concat_partial_ids,
+                    metadata=metadata,
+                    created_at=now,
+                    expires_at=expires_at,
+                )
+
+                safe_emit(request.app, TUSEvent.PRE_CREATE, upload_info=info)
+
+                upload = await tus_storage.concatenate_uploads(info, concat_partial_ids)
+                info = await upload.get_info()
+
+                safe_emit(request.app, TUSEvent.POST_CREATE, upload_info=info)
+                safe_emit(request.app, TUSEvent.PRE_FINISH, upload_info=info)
+                safe_emit(request.app, TUSEvent.POST_FINISH, upload_info=info)
+
+                location = f"{config.path_prefix}/{upload_id}"
+                response_headers: dict[str, str] = {
+                    "Location": location,
+                    "Upload-Offset": str(info.offset),
+                }
+                if expires_at is not None:
+                    response_headers["Upload-Expires"] = _format_http_date(expires_at)
+
+                return Response(content=None, status_code=201, headers=response_headers)
+
             upload_length_header = request.headers.get("upload-length")
             size: int | None = None
             if upload_length_header is not None:
@@ -113,7 +201,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                     metadata = cast("UploadMetadata", override_result)
 
             now = datetime.now(tz=UTC)
-            expires_at: datetime | None = None
+            expires_at = None
             if config.expiration_seconds is not None:
                 expires_at = now + timedelta(seconds=config.expiration_seconds)
 
@@ -122,6 +210,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                 id=upload_id,
                 size=size,
                 offset=0,
+                concat_type=concat_type,
                 metadata=metadata,
                 created_at=now,
                 expires_at=expires_at,
@@ -166,7 +255,7 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                     safe_emit(request.app, TUSEvent.POST_FINISH, upload_info=info)
 
             location = f"{config.path_prefix}/{upload_id}"
-            response_headers: dict[str, str] = {
+            response_headers = {
                 "Location": location,
                 "Upload-Offset": str(info.offset),
             }
@@ -196,6 +285,13 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
                 response_headers["Upload-Metadata"] = encode_metadata(info.metadata)
             if info.expires_at is not None:
                 response_headers["Upload-Expires"] = _format_http_date(info.expires_at)
+            if info.concat_type == "partial":
+                response_headers["Upload-Concat"] = "partial"
+            elif info.concat_type == "final":
+                part_urls = " ".join(
+                    f"{config.path_prefix}/{pid}" for pid in info.concat_parts
+                )
+                response_headers["Upload-Concat"] = f"final;{part_urls}"
 
             return Response(content=None, status_code=200, headers=response_headers)
 
@@ -221,6 +317,10 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
 
             info = await upload.get_info()
             _check_expired(info)
+            if info.concat_type == "final":
+                raise HTTPException(
+                    status_code=403, detail="Cannot modify a final upload"
+                )
             if client_offset != info.offset:
                 raise HTTPException(status_code=409, detail="Offset mismatch")
 

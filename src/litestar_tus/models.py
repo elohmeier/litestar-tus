@@ -18,6 +18,8 @@ class UploadInfo:
     size: int | None = None
     metadata: UploadMetadata = field(default_factory=dict)
     is_final: bool = False
+    concat_type: str | None = None
+    concat_parts: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=_utcnow)
     expires_at: datetime | None = None
     storage_meta: dict[str, object] = field(default_factory=dict)
@@ -32,6 +34,8 @@ class UploadInfo:
                 for k, v in self.metadata.items()
             },
             "is_final": self.is_final,
+            "concat_type": self.concat_type,
+            "concat_parts": self.concat_parts,
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "storage_meta": self.storage_meta,
@@ -67,6 +71,8 @@ class UploadInfo:
             size=int(data["size"]) if data.get("size") is not None else None,
             metadata=metadata,
             is_final=bool(data.get("is_final", False)),
+            concat_type=data.get("concat_type"),
+            concat_parts=list(data.get("concat_parts", [])),
             created_at=created_at,
             expires_at=expires_at,
             storage_meta=storage_meta,

@@ -203,5 +203,34 @@ class FileStorageBackend:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
 
+    async def concatenate_uploads(
+        self, final_info: UploadInfo, partial_ids: list[str]
+    ) -> FileUpload:
+        await self._ensure_dir()
+        data_path = self.upload_dir / final_info.id
+        info_path = self.upload_dir / f"{final_info.id}.info"
+        lock_path = self.upload_dir / f"{final_info.id}.lock"
+
+        partial_data_paths = [self.upload_dir / pid for pid in partial_ids]
+
+        def _concatenate() -> None:
+            # Create lock file
+            lock_path.write_bytes(b"")
+            # Write concatenated data
+            with open(data_path, "wb") as dst:
+                for p_path in partial_data_paths:
+                    with open(p_path, "rb") as src:
+                        while True:
+                            chunk = src.read(1048576)  # 1 MiB
+                            if not chunk:
+                                break
+                            dst.write(chunk)
+            # Write info atomically
+            content = json.dumps(final_info.to_dict()).encode("utf-8")
+            FileUpload._write_info_atomic(info_path, content)
+
+        await anyio.to_thread.run_sync(_concatenate)
+        return FileUpload(final_info, data_path, info_path)
+
     async def terminate_upload(self, upload_id: str) -> None:
         await anyio.to_thread.run_sync(lambda: self._terminate_locked(upload_id))

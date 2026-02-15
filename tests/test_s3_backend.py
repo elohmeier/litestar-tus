@@ -395,3 +395,51 @@ class TestS3OptimisticLocking:
 
         with pytest.raises(ValueError, match="Concurrent modification detected"):
             await upload._save_info()
+
+
+class TestS3Concatenation:
+    async def test_concatenate_two_partials(self, s3_backend: Any) -> None:
+        from litestar_tus.models import UploadInfo
+
+        data1 = b"hello"
+        data2 = b" world"
+
+        # Create and finish partial 1
+        info1 = UploadInfo(id="s3-cat-p1", size=len(data1), concat_type="partial")
+        upload1 = await s3_backend.create_upload(info1)
+        await upload1.write_chunk(0, _aiter(data1))
+        await upload1.finish()
+
+        # Create and finish partial 2
+        info2 = UploadInfo(id="s3-cat-p2", size=len(data2), concat_type="partial")
+        upload2 = await s3_backend.create_upload(info2)
+        await upload2.write_chunk(0, _aiter(data2))
+        await upload2.finish()
+
+        # Concatenate
+        total = len(data1) + len(data2)
+        final_info = UploadInfo(
+            id="s3-cat-final",
+            size=total,
+            offset=total,
+            is_final=True,
+            concat_type="final",
+            concat_parts=["s3-cat-p1", "s3-cat-p2"],
+        )
+        final_upload = await s3_backend.concatenate_uploads(
+            final_info, ["s3-cat-p1", "s3-cat-p2"]
+        )
+
+        # Verify data
+        result = b""
+        async for chunk in final_upload.get_reader():
+            result += chunk
+        assert result == b"hello world"
+
+        # Verify info
+        loaded = await final_upload.get_info()
+        assert loaded.concat_type == "final"
+        assert loaded.concat_parts == ["s3-cat-p1", "s3-cat-p2"]
+        assert loaded.is_final is True
+        assert loaded.offset == total
+        assert loaded.size == total

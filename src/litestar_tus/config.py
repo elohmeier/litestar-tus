@@ -26,6 +26,7 @@ class TUSConfig:
         "termination",
         "expiration",
         "checksum",
+        "concatenation",
     )
     expiration_seconds: int | None = 86400
     metadata_override: (
