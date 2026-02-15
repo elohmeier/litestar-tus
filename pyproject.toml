@@ -10,6 +10,15 @@ dependencies = ["litestar>=2.0"]
 
 [project.optional-dependencies]
 s3 = ["boto3>=1.35"]
+server = ["pydantic-settings>=2.2", "boto3>=1.35", "uvicorn>=0.30"]
+build = ["uv ~= 0.10.0"]
+
+[project.scripts]
+litestar-tus = "litestar_tus.server:main"
+
+[project.urls]
+Homepage = "https://github.com/elohmeier/litestar-tus"
+Repository = "https://github.com/elohmeier/litestar-tus"
 
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
@@ -17,6 +26,15 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+build_command = """
+    python -m pip install -e '.[build]'
+    uv lock --upgrade-package "$PACKAGE_NAME"
+    git add uv.lock
+    uv build
+"""
 
 [dependency-groups]
 dev = [
@@ -26,6 +44,7 @@ dev = [
   "httpx>=0.27",
   "anyio[trio]>=4.0",
   "boto3>=1.35",
+  "pydantic-settings>=2.2",
   "ruff>=0.11",
   "ty>=0.0.1a7",
   "litestar[standard]>=2.19.0",
