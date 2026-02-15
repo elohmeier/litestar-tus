@@ -1,0 +1,11 @@
+{
+  "name": "litestar-tus-perf",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "upload": "node upload.mjs"
+  },
+  "dependencies": {
+    "tus-js-client": "^4"
+  }
+}

@@ -28,4 +28,5 @@ dev = [
   "boto3>=1.35",
   "ruff>=0.11",
   "ty>=0.0.1a7",
+  "litestar[standard]>=2.19.0",
 ]

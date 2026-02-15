@@ -11,7 +11,7 @@ class _DummyS3Client:
     def __init__(self) -> None:
         self.last_put_kwargs: dict[str, object] | None = None
 
-    def put_object(self, **kwargs):  # type: ignore[no-untyped-def]
+    def put_object(self, **kwargs):
         self.last_put_kwargs = kwargs
         return {"ETag": '"etag-after-save"'}
 
@@ -38,7 +38,7 @@ async def test_save_info_treats_precondition_failed_as_concurrent_modification()
     None
 ):
     class _FailingDummyS3Client(_DummyS3Client):
-        def put_object(self, **kwargs):  # type: ignore[no-untyped-def]
+        def put_object(self, **kwargs):
             self.last_put_kwargs = kwargs
             raise ClientError(
                 {

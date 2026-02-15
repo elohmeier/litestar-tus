@@ -58,6 +58,17 @@ TUSConfig(
 )
 ```
 
+### Request Body Size
+
+Litestar's built-in `request_max_body_size` defaults to ~9.5 MiB. If your TUS client sends chunks larger than this, PATCH requests will be rejected with `413 Content Too Large` before reaching litestar-tus. Raise the limit on the `Litestar` app to match your expected chunk sizes:
+
+```python
+app = Litestar(
+    plugins=[TUSPlugin(TUSConfig(...))],
+    request_max_body_size=1024 * 1024 * 100,  # 100 MiB
+)
+```
+
 ## Storage Backends
 
 ### File Backend (default)
