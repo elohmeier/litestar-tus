@@ -1,8 +1,9 @@
 # litestar-tus
 
 [![CI](https://github.com/elohmeier/litestar-tus/actions/workflows/ci.yaml/badge.svg)](https://github.com/elohmeier/litestar-tus/actions/workflows/ci.yaml)
-[![Publish to PyPI](https://github.com/elohmeier/litestar-tus/actions/workflows/pypi.yaml/badge.svg)](https://github.com/elohmeier/litestar-tus/actions/workflows/pypi.yaml)
+[![CD](https://github.com/elohmeier/litestar-tus/actions/workflows/cd.yaml/badge.svg)](https://github.com/elohmeier/litestar-tus/actions/workflows/cd.yaml)
 [![PyPI version](https://img.shields.io/pypi/v/litestar-tus)](https://pypi.org/project/litestar-tus/)
+[![GHCR](https://ghcr-badge.egpl.dev/elohmeier/litestar-tus/latest_tag?trim=major&label=ghcr)](https://github.com/elohmeier/litestar-tus/pkgs/container/litestar-tus)
 
 [TUS v1.0.0](https://tus.io/protocols/resumable-upload) resumable upload protocol plugin for [Litestar](https://litestar.dev) with pluggable storage backends.
 
@@ -14,6 +15,55 @@ pip install litestar-tus
 # With S3 support
 pip install litestar-tus[s3]
 ```
+
+## Standalone Server
+
+litestar-tus ships a standalone server that can be configured entirely via environment variables, following [tusd](https://github.com/tus/tusd)'s configuration conventions.
+
+### Run with uvx
+
+```bash
+# File backend (default)
+uvx litestar-tus[server]
+
+# S3 backend
+TUS_S3_BUCKET=my-bucket TUS_S3_ENDPOINT=http://localhost:9000 \
+  AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+  uvx litestar-tus[server]
+```
+
+### Run with Docker
+
+```bash
+docker run -p 8080:8080 ghcr.io/elohmeier/litestar-tus
+
+# S3 backend
+docker run -p 8080:8080 \
+  -e TUS_S3_BUCKET=my-bucket \
+  -e TUS_S3_ENDPOINT=http://minio:9000 \
+  -e AWS_ACCESS_KEY_ID=minioadmin \
+  -e AWS_SECRET_ACCESS_KEY=minioadmin \
+  ghcr.io/elohmeier/litestar-tus
+```
+
+### Environment Variables
+
+| Variable               | Default    | Description                                  |
+| ---------------------- | ---------- | -------------------------------------------- |
+| `TUS_UPLOAD_DIR`       | `./data`   | File backend storage directory               |
+| `TUS_BASE_PATH`        | `/files/`  | URL path prefix for TUS endpoints            |
+| `TUS_MAX_SIZE`         | `0`        | Maximum upload size in bytes (0 = unlimited) |
+| `TUS_BEHIND_PROXY`     | `false`    | Respect X-Forwarded headers                  |
+| `TUS_HOST`             | `0.0.0.0`  | Bind address                                 |
+| `TUS_PORT`             | `8080`     | Bind port                                    |
+| `TUS_S3_BUCKET`        | —          | S3 bucket name (activates S3 backend)        |
+| `TUS_S3_OBJECT_PREFIX` | —          | S3 key prefix for uploads                    |
+| `TUS_S3_ENDPOINT`      | —          | Custom S3 endpoint (MinIO, etc.)             |
+| `TUS_S3_PART_SIZE`     | `10485760` | S3 multipart part size (10 MiB)              |
+
+AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) are read by boto3 directly.
+
+The server exposes a `/health` endpoint returning `{"status": "ok"}`.
 
 ## Quick Start
 
