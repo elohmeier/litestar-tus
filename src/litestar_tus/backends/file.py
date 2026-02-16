@@ -93,6 +93,7 @@ class FileUpload:
                 raise ValueError(msg)
 
             bytes_written = 0
+            stream_exc: Exception | None = None
             with open(self._data_path, "ab") as f:
                 try:
                     while True:
@@ -101,10 +102,14 @@ class FileUpload:
                             break
                         f.write(chunk)
                         bytes_written += len(chunk)
-                except Exception:
+                except Exception as exc:
+                    status_code = getattr(exc, "status_code", None)
+                    if status_code is not None and status_code < 500:
+                        f.flush()
+                        f.truncate(info.offset)
+                        raise
+                    stream_exc = exc
                     f.flush()
-                    f.truncate(info.offset)
-                    raise
 
             info.offset += bytes_written
             if info.size is not None and info.offset >= info.size:
@@ -114,6 +119,10 @@ class FileUpload:
                 self._info_path, json.dumps(info.to_dict()).encode("utf-8")
             )
             self._info = info
+
+            if stream_exc:
+                raise stream_exc
+
             return bytes_written
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)

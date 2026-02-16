@@ -3,12 +3,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import inspect
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+import anyio
 from litestar import Controller, Request, Response, delete, head, patch, post
-from litestar.exceptions import HTTPException, NotFoundException
+from litestar.exceptions import HTTPException, InternalServerException, NotFoundException
 
 from litestar_tus._utils import (
     encode_metadata,
@@ -21,6 +23,8 @@ from litestar_tus.config import SUPPORTED_CHECKSUM_ALGORITHMS, TUSConfig
 from litestar_tus.events import TUSEvent
 from litestar_tus.models import UploadInfo, UploadMetadata
 from litestar_tus.protocols import StorageBackend
+
+logger = logging.getLogger(__name__)
 
 
 def _format_http_date(dt: datetime) -> str:
@@ -338,10 +342,27 @@ def build_tus_controller(config: TUSConfig) -> type[Controller]:
             checksum_header = request.headers.get("upload-checksum")
             stream = ChecksumAwareStream(request.stream(), checksum_header)
 
+            # Increase thread pool limit to prevent starvation during concurrent uploads
+            anyio.to_thread.current_default_thread_limiter().total_tokens = 100
+
             try:
                 await upload.write_chunk(client_offset, stream)
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except InternalServerException as exc:
+                # Handle premature client disconnect gracefully.
+                # Litestar raises InternalServerException with this message when the client drops the connection.
+                if "client disconnected prematurely" in str(exc):
+                    info = await upload.get_info()
+                    return Response(
+                        content=None,
+                        status_code=204,
+                        headers={"Upload-Offset": str(info.offset)},
+                    )
+
+                # For other InternalServerExceptions, we log a warning but still re-raise as 500
+                logger.warning("TUS: Internal error during write_chunk: %s", exc)
+                raise
             info = await upload.get_info()
 
             safe_emit(request.app, TUSEvent.POST_RECEIVE, upload_info=info)

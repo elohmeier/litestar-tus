@@ -159,23 +159,31 @@ class S3Upload:
             parts_uploaded = 0
             t_stream_start = time.perf_counter()
             t_upload_parts = 0.0
-            async for chunk in src:
-                buf.extend(chunk)
-                total_written += len(chunk)
+            stream_exc: Exception | None = None
+            try:
+                async for chunk in src:
+                    buf.extend(chunk)
+                    total_written += len(chunk)
 
-                # Flush full parts as they accumulate
-                while len(buf) >= self._part_size:
-                    part_number = len(parts) + 1
-                    part_data = bytes(buf[: self._part_size])
-                    t_part = time.perf_counter()
-                    part = await self._upload_part(upload_id, part_number, part_data)
-                    t_upload_parts += time.perf_counter() - t_part
-                    parts_uploaded += 1
-                    parts.append(part)
-                    del buf[: self._part_size]
+                    # Flush full parts as they accumulate
+                    while len(buf) >= self._part_size:
+                        part_number = len(parts) + 1
+                        part_data = bytes(buf[: self._part_size])
+                        t_part = time.perf_counter()
+                        part = await self._upload_part(upload_id, part_number, part_data)
+                        t_upload_parts += time.perf_counter() - t_part
+                        parts_uploaded += 1
+                        parts.append(part)
+                        del buf[: self._part_size]
+            except Exception as exc:
+                status_code = getattr(exc, "status_code", None)
+                if status_code is not None and status_code < 500:
+                    raise
+                stream_exc = exc
+
             t_stream_end = time.perf_counter()
 
-            if total_written == 0 and pending_size == 0:
+            if total_written == 0 and pending_size == 0 and not stream_exc:
                 return 0
 
             # Store leftover as pending or delete if empty
@@ -212,6 +220,10 @@ class S3Upload:
                 (t_end - t_pending_done) * 1000,
                 (t_end - t0) * 1000,
             )
+
+            if stream_exc:
+                raise stream_exc
+
             return total_written
 
     async def get_info(self) -> UploadInfo:
