@@ -2,6 +2,27 @@
 
 <!-- version list -->
 
+## v1.3.0 (2026-09-19)
+
+### Bug Fixes
+
+- **ci**: Restore upload reliability checks
+  ([`421bb03`](https://github.com/elohmeier/litestar-tus/commit/421bb0355627b66f011cbd4bc77d01b2ef363369))
+
+### Chores
+
+- Update gitignore
+  ([`d016917`](https://github.com/elohmeier/litestar-tus/commit/d016917279906af3dde4af917a964e7cf8960873))
+
+- Update README
+  ([`63d409f`](https://github.com/elohmeier/litestar-tus/commit/63d409f89644b665e28fe81e35b62e2de4de5656))
+
+### Features
+
+- Increase robustness during parallel uploads
+  ([`8ccfd5e`](https://github.com/elohmeier/litestar-tus/commit/8ccfd5e3445c6ecd8ce66f17e8b2d292ca09fb65))
+
+
 ## v1.2.0 (2026-02-15)
 
 ### Bug Fixes
