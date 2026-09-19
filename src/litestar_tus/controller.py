@@ -9,8 +9,13 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import anyio
+import anyio.to_thread
 from litestar import Controller, Request, Response, delete, head, patch, post
-from litestar.exceptions import HTTPException, InternalServerException, NotFoundException
+from litestar.exceptions import (
+    HTTPException,
+    InternalServerException,
+    NotFoundException,
+)
 
 from litestar_tus._utils import (
     encode_metadata,

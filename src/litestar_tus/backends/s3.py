@@ -170,7 +170,9 @@ class S3Upload:
                         part_number = len(parts) + 1
                         part_data = bytes(buf[: self._part_size])
                         t_part = time.perf_counter()
-                        part = await self._upload_part(upload_id, part_number, part_data)
+                        part = await self._upload_part(
+                            upload_id, part_number, part_data
+                        )
                         t_upload_parts += time.perf_counter() - t_part
                         parts_uploaded += 1
                         parts.append(part)

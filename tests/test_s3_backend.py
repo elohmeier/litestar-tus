@@ -5,6 +5,7 @@ from typing import Any
 
 import anyio
 import pytest
+from litestar.exceptions import InternalServerException
 
 pytest_plugins = ["pytest_databases.docker.minio"]
 
@@ -14,6 +15,11 @@ _5MIB = 5 * 1024 * 1024
 
 async def _aiter(data: bytes):
     yield data
+
+
+async def _aiter_then_disconnect(data: bytes):
+    yield data
+    raise InternalServerException("client disconnected prematurely")
 
 
 async def _aiter_chunks(data: bytes, chunk_size: int = 1024 * 1024):
@@ -83,6 +89,25 @@ class TestS3StorageBackend:
 
         loaded = await upload.get_info()
         assert loaded.offset == 50
+
+    async def test_write_chunk_preserves_data_before_disconnect(
+        self, s3_backend: Any
+    ) -> None:
+        from litestar_tus.models import UploadInfo
+
+        info = UploadInfo(id="s3-test-disconnect", size=10)
+        upload = await s3_backend.create_upload(info)
+
+        with pytest.raises(InternalServerException):
+            await upload.write_chunk(0, _aiter_then_disconnect(b"hello"))
+
+        loaded = await upload.get_info()
+        assert loaded.offset == 5
+        assert loaded.storage_meta["pending_size"] == 5
+
+        await upload.write_chunk(loaded.offset, _aiter(b"world"))
+        await upload.finish()
+        assert b"".join([chunk async for chunk in upload.get_reader()]) == b"helloworld"
 
     async def test_write_and_finish(self, s3_backend: Any) -> None:
         from litestar_tus.models import UploadInfo

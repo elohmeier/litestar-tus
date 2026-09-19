@@ -4,12 +4,18 @@ from pathlib import Path
 
 import anyio
 import pytest
+from litestar.exceptions import InternalServerException
 from litestar_tus.backends.file import FileStorageBackend
 from litestar_tus.models import UploadInfo
 
 
 async def _aiter(data: bytes):
     yield data
+
+
+async def _aiter_then_disconnect(data: bytes):
+    yield data
+    raise InternalServerException("client disconnected prematurely")
 
 
 @pytest.fixture
@@ -54,6 +60,22 @@ class TestFileStorageBackend:
         loaded = await upload.get_info()
         assert loaded.offset == 10
         assert loaded.is_final is True
+
+    async def test_write_chunk_preserves_data_before_disconnect(
+        self, backend: FileStorageBackend, upload_dir: Path
+    ) -> None:
+        info = UploadInfo(id="test-disconnect", size=10)
+        upload = await backend.create_upload(info)
+
+        with pytest.raises(InternalServerException):
+            await upload.write_chunk(0, _aiter_then_disconnect(b"hello"))
+
+        loaded = await upload.get_info()
+        assert loaded.offset == 5
+        assert (upload_dir / info.id).read_bytes() == b"hello"
+
+        await upload.write_chunk(loaded.offset, _aiter(b"world"))
+        assert (upload_dir / info.id).read_bytes() == b"helloworld"
 
     async def test_write_chunk_offset_mismatch(
         self, backend: FileStorageBackend
